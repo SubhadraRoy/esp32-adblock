@@ -362,7 +362,7 @@ tbody tr:last-child td{border-bottom:none}
       <div class="table-wrap">
         <table>
           <tbody>
-            <tr><td class="dim">Microcontroller &amp; Silicon</td><td class="mono">ESP32-D0WD-V3 (Revision v3.1, Dual-Core Xtensa LX6 @ 160 MHz)</td></tr>
+            <tr><td class="dim">Development Board &amp; SoC</td><td class="mono">ESP32 DevKit V1 (ESP32-D0WD-V3 rev 3.1, Dual-Core Xtensa LX6 @ 160 MHz)</td></tr>
             <tr><td class="dim">Memory Footprint</td><td class="mono">320 KB Usable SRAM &bull; ~115 KB Contiguous Free DRAM &bull; Zero PSRAM Needed</td></tr>
             <tr><td class="dim">Flash Storage &amp; Filesystem</td><td class="mono">4 MB SPI Flash (DIO @ 80 MHz) &bull; 2.625 MB LittleFS VFS &bull; &gt;600 Yr Cell Endurance</td></tr>
             <tr><td class="dim">Network Sockets &amp; Queue</td><td class="mono">16 KB UDP Receive Buffer &bull; 32-slot Async DnsTx Queue (Zero HoL Blocking)</td></tr>

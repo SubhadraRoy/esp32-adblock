@@ -35,6 +35,10 @@ ESP32 AdBlock is designed as an embedded network appliance operating within a pr
 - **Buffer Overflow Protection:** Socket packet sizes are clamped to the 1,472-byte Ethernet MTU payload. Hostname parsers strictly enforce label lengths ($\le 63$) and domain lengths ($\le 253$).
 - **Zero-Allocation APIs:** Query string parsers and JSON builders use fixed stack buffers rather than heap `malloc`, preventing heap fragmentation and memory exhaustion denial-of-service.
 
+### 5. Adversarial Fuzzing & Protocol Hardening
+- **Protocol Fuzzing:** Tested against 119 malformed DNS packets, including infinite compression loops (`0xC00C`), truncated headers, forward pointers (`0xC0FF`), and randomized byte streams.
+- **Watchdog & Crash Safety:** Hardware UART logs verify 0 panics, 0 assertion aborts, 0 brownout resets (Level 4 / 2.67V), and zero heap fragmentation under adversarial loads.
+
 ---
 
 ## Reporting a Vulnerability

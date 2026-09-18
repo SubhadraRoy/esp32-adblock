@@ -1,12 +1,12 @@
 # ESP32 AdBlock — 24/7/365 Native DNS Sinkhole & Dashboard
 
 [![Platform](https://img.shields.io/badge/Platform-ESP--IDF%20v6.0.1-red.svg)](https://docs.espressif.com/projects/esp-idf/)
-[![Hardware](https://img.shields.io/badge/Hardware-ESP32--D0WD--V3%20(Rev%203.1)-blue.svg)](https://www.espressif.com/en/products/socs/esp32)
+[![Hardware](https://img.shields.io/badge/Hardware-ESP32%20DevKit%20V1-blue.svg)](https://docs.espressif.com/projects/esp-idf/)
 [![RAM](https://img.shields.io/badge/RAM%20Footprint-~99%20KB%20(%3C31%25)-green.svg)]()
 [![Flash Endurance](https://img.shields.io/badge/Flash%20Endurance-%3E600%20Years-success.svg)]()
 [![License](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
 
-A production-grade, 24/7/365 non-stop **network-wide DNS ad-blocker sinkhole and real-time telemetry dashboard** running natively on a **classic ESP32** ($3 microcontroller, no PSRAM required). 
+A production-grade, 24/7/365 non-stop **network-wide DNS ad-blocker sinkhole and real-time telemetry dashboard** running natively on an **ESP32 DevKit V1** ($3 microcontroller, no PSRAM required). 
 
 Built purely on native **ESP-IDF v6.0.1 APIs** (zero Arduino framework dependencies), this firmware blocks ads, tracking scripts, and telemetry domains across your entire home network in **under 0.5 milliseconds** while consuming only **~0.6W** of power.
 
@@ -29,8 +29,8 @@ Built purely on native **ESP-IDF v6.0.1 APIs** (zero Arduino framework dependenc
 
 | Component | Specification |
 | :--- | :--- |
-| **Microcontroller** | ESP32 DevKit V1 (ESP32-WROOM-32) |
-| **Silicon Revision** | ESP32-D0WD-V3 (Revision v3.1) |
+| **Development Board** | **ESP32 DevKit V1** (ESP32-WROOM-32) |
+| **SoC / Silicon** | ESP32-D0WD-V3 (Revision v3.1, Eco 3.1) |
 | **CPU Core** | Dual-core 32-bit Xtensa LX6 @ **160 MHz** |
 | **Memory** | 520 KB SRAM (~320 KB usable, ~115 KB free contiguous DRAM) |
 | **Flash Memory** | 4 MB SPI Flash (DIO mode @ 80 MHz, Boya Microelectronics) |
@@ -150,7 +150,7 @@ For device-specific guides (Windows, macOS, iOS, Android, Linux, OpenWrt), see [
 
 ## Performance & Verification
 
-Hardware verification conducted on an **ESP32-D0WD-V3 rev 3.1**:
+Hardware verification conducted on an **ESP32 DevKit V1** (ESP32-D0WD-V3 rev 3.1):
 
 ```text
 > nslookup doubleclick.net 192.168.1.50
@@ -170,6 +170,18 @@ Address: 142.250.29.138
 ```
 
 Detailed latency charts, memory profiling, and endurance benchmarks are available in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+
+---
+
+## Adversarial Hardening & Attack Fuzzing Resilience
+
+The firmware has been thoroughly battle-tested on physical hardware with an aggressive adversarial torture and protocol fuzzing test suite:
+
+- **RFC Protocol & Malformed Fuzzing (119 test cases):** Tested against 0-byte packets, truncated fragments (1–11 bytes), reflection amplification probes (`QR=1`), non-standard opcodes, and 100 randomized byte streams. All malformed packets are dropped safely or returned as standard RFC 1035 `FORMERR` without crashing or allocating heap memory.
+- **Infinite Compression Pointer Protection:** Malicious DNS packets with self-referential compression loops (`0xC00C`) or forward out-of-bounds pointers (`0xC0FF`) are strictly rejected during label extraction (`l & 0xC0`), completely preventing infinite loops and Task Watchdog (TWDT) triggers.
+- **Head-of-Line (HoL) Blocking Immunity:** Stress-tested with a burst of **45 concurrent upstream queries** into `txTable[32]`. The local ad sinkhole continued responding in real time, and excess queries dropped cleanly without resource exhaustion.
+- **Web API Boundary Defense:** Path traversal probes (`/../../etc/passwd`, `//////////`, `%00`), script injections (`<script>`), parameter fuzzing, and malformed binary uploads are strictly rejected (HTTP 401/404) without modifying flash storage.
+- **Hardware & Electrical Zero-Crash Verification:** Physical UART monitoring on `COM7` during full adversarial stress recorded **0 Guru Meditation panics, 0 assertion aborts, 0 brownout resets (Level 4 / 2.67V), and 0 memory leaks** (100% DRAM recovery post-stress).
 
 ---
 

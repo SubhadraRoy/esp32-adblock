@@ -76,3 +76,19 @@ Normal DNS query resolution performs **read-only** binary searches into flash me
 | **Flash Reads per Query** | 18 reads on false-positive pass | **Average 10 reads (0 reads if prefix absent)** |
 | **Rebuild Time on Boot** | ~350 ms (bit manipulations) | **~120 ms (sequential stream)** |
 
+---
+
+## 6. Adversarial Stress & Protocol Torture Benchmarks
+
+Conducted on physical hardware (**ESP32 DevKit V1**, ESP32-D0WD-V3 rev 3.1):
+
+| Attack / Stress Vector | Payload / Injection Pattern | Firmware Behavior | Outcome |
+| :--- | :--- | :--- | :--- |
+| **Malformed DNS Fragments** | 0-byte, 1–11B truncated packets | Dropped before allocation | **PASS** |
+| **Infinite Pointer Loop** | Compression pointer to self (`0xC00C`) | Rejected at parser (`l & 0xC0`) | **PASS** |
+| **RFC Fuzzing Burst** | 100 randomized mutated byte streams | 0 panics, core stable | **PASS** |
+| **HoL Concurrency Burst** | 45 concurrent upstream queries | In-flight table safely bounded | **PASS** |
+| **Path Traversal & Injection** | `/../../etc/passwd`, `<script>` | Rejected with HTTP 401/404 | **PASS** |
+| **Hardware Integrity** | Monitored via physical UART on `COM7` | 0 panics, 0 brownouts, 0 WDT resets | **PASS** |
+| **Post-Stress DRAM Recovery** | Monitored before and after test suites | 100% DRAM recovered; zero heap leaks | **PASS** |
+

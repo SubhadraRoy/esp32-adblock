@@ -1,4 +1,4 @@
-// ESP32 AdBlock — Production-grade DNS sinkhole + web dashboard for ESP32 (D0WD-V3 rev 3.1).
+// ESP32 AdBlock — Production-grade DNS sinkhole + web dashboard for ESP32 DevKit V1 (ESP32-D0WD-V3 rev 3.1).
 // Pure ESP-IDF native APIs: esp_wifi, BSD sockets, LittleFS VFS, esp_http_server, esp_http_client.
 // Hardened for 24/7/365 continuous uptime, zero memory leaks, and RFC 1035/6891 compliance.
 
