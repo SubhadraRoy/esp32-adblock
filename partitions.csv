@@ -1,0 +1,13 @@
+# Single-app layout for 4MB flash: no dual-OTA slot, all the freed space goes to the
+# data partition (0x2A0000 = ~2.625MB). Firmware ~1.3MB budget.
+# To support crash-safe, zero-downtime atomic blocklist updates, the live blocklist.bin
+# and incoming blocklist.new coexist during download and validation. Firmware caps
+# blocklist size at 1.20MB (~245,000 domains), ensuring 1.20MB + 1.20MB fits within the
+# 2.625MB partition with >225KB reserved for LittleFS metadata, wear leveling, and configs.
+# Trade-off: no network firmware OTA (requires USB reflash). Blocklist updates via web
+# dashboard or remote fetch are fully supported.
+# "spiffs" below is esptool's naming convention for subtype 0x82, mounted as LittleFS.
+# Name,     Type, SubType, Offset,   Size
+nvs,        data, nvs,     0x9000,   0x5000
+factory,    app,  factory, 0x10000,  0x150000
+spiffs,     data, spiffs,  0x160000, 0x2A0000

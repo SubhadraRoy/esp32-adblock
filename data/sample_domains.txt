@@ -1,0 +1,11 @@
+doubleclick.net
+adservice.google.com
+ads.twitter.com
+telemetry.appcenter.ms
+graph.instagram.com
+fls-na.amazon.com
+pagead2.googlesyndication.com
+analytics.google.com
+bat.bing.com
+adnxs.com
+

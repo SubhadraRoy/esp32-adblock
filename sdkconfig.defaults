@@ -1,0 +1,65 @@
+# Explicit rather than relying on ESP-IDF's implicit default -- this is what makes
+# esp_crt_bundle_attach() actually have a certificate store to validate against for the
+# HTTPS blocklist fetch. It's on by default in stock ESP-IDF, but pinning it here means
+# the build doesn't silently start failing TLS validation if that default ever changes.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
+# Custom Partition Table Layout (Single factory app + 2.625MB LittleFS data partition)
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+
+# ESP32-D0WD-V3 (rev 3.1) Hardware & Clock Configurations
+# 160MHz CPU frequency drops board power by ~120mW and reduces enclosure temps by 5-8°C with zero latency impact
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=160
+CONFIG_XTAL_FREQ_40=y
+CONFIG_XTAL_FREQ=40
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_SPI_FLASH_SUPPORT_BOYA_CHIP=y
+
+# Pin Silicon Revision to Rev 3.1 (strips obsolete DPORT Level 5 interrupt workarounds)
+CONFIG_ESP32_REV_MIN_3_1=y
+CONFIG_ESP32_REV_MIN=3
+
+# Hardware Brownout Detector (Level 4 / ~2.67V protects 2.70V Boya flash against 3.3V dips)
+CONFIG_ESP_BROWNOUT_DET=y
+CONFIG_ESP_BROWNOUT_DET_LVL_SEL_4=y
+CONFIG_ESP_BROWNOUT_DET_LVL=4
+
+# Interrupt Watchdog Timer (IWDT: catch ISR and critical section lockups)
+CONFIG_ESP_INT_WDT=y
+CONFIG_ESP_INT_WDT_TIMEOUT_MS=500
+CONFIG_ESP_INT_WDT_CHECK_CPU1=y
+
+# FreeRTOS 100Hz standard tick resolution
+CONFIG_FREERTOS_HZ=100
+
+# Task Stack Sizing for stability (prevents double exception / stack overflow in sys_evt and app_main)
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
+
+# Sockets and LwIP Concurrency Scaling (prevents packet drops during query bursts)
+CONFIG_LWIP_SO_RCVBUF=y
+CONFIG_LWIP_MAX_SOCKETS=16
+CONFIG_LWIP_UDP_RECVMBOX_SIZE=32
+CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=64
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=64
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=16
+CONFIG_LWIP_TCPIP_CORE_LOCKING=y
+
+# LittleFS Flash Geometry & Cache Scaling
+CONFIG_LITTLEFS_PAGE_SIZE=256
+CONFIG_LITTLEFS_READ_SIZE=128
+CONFIG_LITTLEFS_WRITE_SIZE=128
+CONFIG_LITTLEFS_LOOKAHEAD_SIZE=128
+CONFIG_LITTLEFS_CACHE_SIZE=512
+CONFIG_LITTLEFS_BLOCK_CYCLES=512
+CONFIG_LITTLEFS_WDT_RESET=n
+
+# Task Watchdog configuration (20s timeout, panic on trigger)
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=20
+CONFIG_ESP_TASK_WDT_PANIC=y
