@@ -1,11 +1,13 @@
 # ESP32 AdBlock — 24/7/365 Native DNS Sinkhole & Dashboard
 
 [![Platform](https://img.shields.io/badge/Platform-ESP--IDF%20v6.0.1-red.svg)](https://docs.espressif.com/projects/esp-idf/)
+[![Hardware](https://img.shields.io/badge/Hardware-ESP32--D0WD--V3%20(Rev%203.1)-blue.svg)](https://www.espressif.com/en/products/socs/esp32)
 [![Hardware](https://img.shields.io/badge/Hardware-ESP32%20DevKit%20V1-blue.svg)](https://docs.espressif.com/projects/esp-idf/)
 [![RAM](https://img.shields.io/badge/RAM%20Footprint-~99%20KB%20(%3C31%25)-green.svg)]()
 [![Flash Endurance](https://img.shields.io/badge/Flash%20Endurance-%3E600%20Years-success.svg)]()
 [![License](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
 
+A production-grade, 24/7/365 non-stop **network-wide DNS ad-blocker sinkhole and real-time telemetry dashboard** running natively on a **classic ESP32** ($3 microcontroller, no PSRAM required). 
 A production-grade, 24/7/365 non-stop **network-wide DNS ad-blocker sinkhole and real-time telemetry dashboard** running natively on an **ESP32 DevKit V1** ($3 microcontroller, no PSRAM required). 
 
 Built purely on native **ESP-IDF v6.0.1 APIs** (zero Arduino framework dependencies), this firmware blocks ads, tracking scripts, and telemetry domains across your entire home network in **under 0.5 milliseconds** while consuming only **~0.6W** of power.
@@ -29,6 +31,8 @@ Built purely on native **ESP-IDF v6.0.1 APIs** (zero Arduino framework dependenc
 
 | Component | Specification |
 | :--- | :--- |
+| **Microcontroller** | ESP32 DevKit V1 (ESP32-WROOM-32) |
+| **Silicon Revision** | ESP32-D0WD-V3 (Revision v3.1) |
 | **Development Board** | **ESP32 DevKit V1** (ESP32-WROOM-32) |
 | **SoC / Silicon** | ESP32-D0WD-V3 (Revision v3.1, Eco 3.1) |
 | **CPU Core** | Dual-core 32-bit Xtensa LX6 @ **160 MHz** |
@@ -150,6 +154,7 @@ For device-specific guides (Windows, macOS, iOS, Android, Linux, OpenWrt), see [
 
 ## Performance & Verification
 
+Hardware verification conducted on an **ESP32-D0WD-V3 rev 3.1**:
 Hardware verification conducted on an **ESP32 DevKit V1** (ESP32-D0WD-V3 rev 3.1):
 
 ```text
