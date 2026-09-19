@@ -188,6 +188,8 @@ The firmware has been thoroughly battle-tested on physical hardware with an aggr
 - **Web API Boundary Defense:** Path traversal probes (`/../../etc/passwd`, `//////////`, `%00`), script injections (`<script>`), parameter fuzzing, and malformed binary uploads are strictly rejected (HTTP 401/404) without modifying flash storage.
 - **Hardware & Electrical Zero-Crash Verification:** Physical UART monitoring on `COM7` during full adversarial stress recorded **0 Guru Meditation panics, 0 assertion aborts, 0 brownout resets (Level 4 / 2.67V), and 0 memory leaks** (100% DRAM recovery post-stress).
 
+For the complete multi-hour telemetry logs and test timeline, see [docs/SOAK_TEST.md](docs/SOAK_TEST.md).
+
 ---
 
 ## REST API Reference
@@ -214,9 +216,10 @@ Complete request parameters, error codes, and examples are documented in [docs/A
 ## Documentation Index
 
 - [Architecture & Concurrency Design](docs/ARCHITECTURE.md)
+- [24/7 Soak Test & Reliability Audit](docs/SOAK_TEST.md)
+- [Performance & Endurance Benchmarks](docs/BENCHMARKS.md)
 - [REST API Specification](docs/API.md)
 - [Router & Client Configuration Guide](docs/ROUTER_SETUP.md)
-- [Performance & Endurance Benchmarks](docs/BENCHMARKS.md)
 - [Security Policy & Threat Model](SECURITY.md)
 - [Contributing Guidelines](CONTRIBUTING.md)
 

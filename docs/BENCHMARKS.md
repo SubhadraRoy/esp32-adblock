@@ -92,3 +92,5 @@ Conducted on physical hardware (**ESP32 DevKit V1**, ESP32-D0WD-V3 rev 3.1):
 | **Hardware Integrity** | Monitored via physical UART on `COM7` | 0 panics, 0 brownouts, 0 WDT resets | **PASS** |
 | **Post-Stress DRAM Recovery** | Monitored before and after test suites | 100% DRAM recovered; zero heap leaks | **PASS** |
 
+For the complete multi-hour soak timeline and heap drift analysis, see [SOAK_TEST.md](SOAK_TEST.md).
+
