@@ -7,7 +7,6 @@
 [![Flash Endurance](https://img.shields.io/badge/Flash%20Endurance-%3E600%20Years-success.svg)]()
 [![License](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
 
-A production-grade, 24/7/365 non-stop **network-wide DNS ad-blocker sinkhole and real-time telemetry dashboard** running natively on a **classic ESP32** ($3 microcontroller, no PSRAM required). 
 A production-grade, 24/7/365 non-stop **network-wide DNS ad-blocker sinkhole and real-time telemetry dashboard** running natively on an **ESP32 DevKit V1** ($3 microcontroller, no PSRAM required). 
 
 Built purely on native **ESP-IDF v6.0.1 APIs** (zero Arduino framework dependencies), this firmware blocks ads, tracking scripts, and telemetry domains across your entire home network in **under 0.5 milliseconds** while consuming only **~0.6W** of power.
@@ -23,7 +22,7 @@ Built purely on native **ESP-IDF v6.0.1 APIs** (zero Arduino framework dependenc
 - **64-Bit Monotonic Uptime:** Uses `millis64()` (`esp_timer_get_time() / 1000ULL`) across client tracking and background health monitors, eliminating the 49.7-day 32-bit `millis()` rollover eviction bug.
 - **Thermal & Silicon Optimized:** Dual-core Xtensa LX6 clocked at **160MHz** with Wi-Fi TX power capped at **17dBm**. Lowers board power by ~120mW and internal temps by 5°C–8°C, preventing LDO brownouts.
 - **Zero Flash Wear in Normal Operation:** DNS queries perform 100% read-only operations. LittleFS wear-leveling yields an estimated flash endurance exceeding **600 years**.
-- **Embedded Web Dashboard:** Real-time pulse throughput chart, per-client telemetry, client banning, custom domain management, and remote OTA blocklist auto-updates. Engineered with chained timeouts, dirty-checked DOM updates, and CSRF Origin protection.
+- **Embedded 5-Tab Web Dashboard:** Real-time pulse throughput chart, dual-section client manager with active/offline deduplication, inline device renaming with LittleFS persistence, manual stale client deletion, custom domain management, remote OTA blocklist auto-updates, and live blocked activity log (with search and CSV export). Engineered with chained timeouts, dirty-checked DOM updates, and CSRF Origin protection.
 
 ---
 
@@ -31,8 +30,6 @@ Built purely on native **ESP-IDF v6.0.1 APIs** (zero Arduino framework dependenc
 
 | Component | Specification |
 | :--- | :--- |
-| **Microcontroller** | ESP32 DevKit V1 (ESP32-WROOM-32) |
-| **Silicon Revision** | ESP32-D0WD-V3 (Revision v3.1) |
 | **Development Board** | **ESP32 DevKit V1** (ESP32-WROOM-32) |
 | **SoC / Silicon** | ESP32-D0WD-V3 (Revision v3.1, Eco 3.1) |
 | **CPU Core** | Dual-core 32-bit Xtensa LX6 @ **160 MHz** |
@@ -154,7 +151,6 @@ For device-specific guides (Windows, macOS, iOS, Android, Linux, OpenWrt), see [
 
 ## Performance & Verification
 
-Hardware verification conducted on an **ESP32-D0WD-V3 rev 3.1**:
 Hardware verification conducted on an **ESP32 DevKit V1** (ESP32-D0WD-V3 rev 3.1):
 
 ```text
@@ -198,8 +194,11 @@ The onboard HTTP server provides a JSON and REST API for automation and home lab
 
 | Endpoint | Method | Auth Required | Description |
 | :--- | :--- | :--- | :--- |
-| `/` | `GET` | No | Responsive Single-Page Dashboard |
+| `/` | `GET` | No | Responsive Single-Page Dashboard (5 Tabs) |
 | `/stats.json` | `GET` | Optional* | System stats, client list, custom blocklist |
+| `/log.json` | `GET` | Optional* | Recent blocked activity log (circular buffer) |
+| `/setname?ip=...&name=...` | `POST` | Yes | Assign or clear persistent friendly device alias |
+| `/delclient?ip=...` | `POST` | Yes | Manually remove client/offline device from tracking |
 | `/ban?ip=...` | `POST` | Yes | Toggle network client ban |
 | `/addblock?d=...` | `POST` | Yes | Add custom blocked domain |
 | `/unblock?d=...` | `POST` | Yes | Remove custom blocked domain |

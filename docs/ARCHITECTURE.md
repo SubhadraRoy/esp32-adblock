@@ -142,3 +142,67 @@ Blocklists are never updated in-place:
 3. Upon validation, `rename("/lfs/blocklist.new", "/lfs/blocklist.bin")` atomically swaps the file.
 4. If power is interrupted at any point during download or validation, the previous blocklist remains completely intact, and `cleanOrphanFiles()` purges temporary artifacts on subsequent boot.
 
+---
+
+## 7. Client Telemetry, Friendly Aliasing & Offline Partitioning
+
+### State Model (`struct Dev`):
+Every LAN device querying the ESP32 is tracked dynamically in `clients[MAX_CLIENTS]` (up to 64 devices):
+```c
+struct Dev {
+    uint32_t ip;
+    uint8_t  mac[6];
+    char     name[32];      // Friendly alias (e.g., "Living Room TV")
+    uint32_t blocked;
+    uint32_t allowed;
+    bool     banned;
+    uint64_t lastSeenMs;    // Monotonic 64-bit millisecond timestamp
+};
+```
+
+### Persistent Friendly Device Aliases:
+- Friendly device aliases are mapped by IPv4 in `devNames[MAX_DEV_NAMES]` and persisted in `/lfs/names.txt`.
+- When a new client is discovered or sends a query, `getClient()` automatically populates its `name` field from the alias table.
+- Renaming via `POST /setname?ip=...&name=...` updates memory immediately and performs an atomic write using `/lfs/names.txt.new` followed by `rename()`.
+- Unused/orphaned temp files are purged on boot by `cleanOrphanFiles()`.
+
+### Strict Offline Deduplication:
+To prevent device duplication across dashboard cards, clients are partitioned by an inactivity threshold of 15 minutes (900 seconds):
+- **Active Clients (Online):** `lastSeenSec <= 900`
+- **Offline Devices:** `lastSeenSec > 900`
+- **Guarantee:** A client is strictly categorized into exactly one section at any given time.
+- **Manual Deletion (`POST /delclient?ip=...`):** Operators can purge stale offline devices from tracking and persistent storage with a single click.
+
+---
+
+## 8. Blocked Activity Log (Tab 5)
+
+### Zero-Allocation Circular Buffer:
+Recent blocked queries are captured in a high-speed circular buffer in DRAM:
+```c
+struct BlockLogEntry {
+    time_t   time;          // Unix epoch seconds (or boot monotonic if unsynced)
+    uint32_t ip;            // Client IPv4 address
+    char     name[24];      // Snapshot of device friendly alias
+    char     domain[64];    // Blocked domain name
+    uint16_t qtype;         // DNS query type (A, AAAA, HTTPS, etc.)
+    bool     isNodata;      // true: NODATA, false: 0.0.0.0
+};
+static BlockLogEntry blockLog[64];
+```
+- **Zero Heap Overhead:** Ring buffer storage is statically pre-allocated (~6.5 KB DRAM).
+- **Sub-Microsecond Logging:** `logBlocked()` executes inline inside `dnsTask` without heap allocations, string formatting, or disk I/O.
+- **Reverse Chronological Streaming:** `GET /log.json` streams entries from newest to oldest using chunked HTTP transfer encoding (`httpd_resp_send_chunk`).
+- **Dashboard Features:** Tab 5 provides real-time search filtering by domain or device name, manual/auto-refresh, and client-side CSV export (`exportLogsCSV()`).
+
+---
+
+## 9. Network Time Synchronization (SNTP)
+
+To provide human-readable timestamps for blocked DNS events:
+- The SNTP client is initialized in `wifiInit()` using LwIP's `esp_sntp`:
+  - Primary server: `pool.ntp.org`
+  - Secondary server: `time.google.com`
+- When time synchronizes (`time(NULL) > 1700000000`), the dashboard displays exact local date/time strings (`M/d/yyyy, h:mm:ss a`).
+- Prior to synchronization or in isolated offline LANs, timestamps gracefully fall back to monotonic offsets (`+Xs` relative to boot).
+

@@ -11,6 +11,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <time.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -27,6 +28,7 @@
 #include "esp_random.h"
 #include "nvs_flash.h"
 #include "esp_littlefs.h"
+#include "esp_sntp.h"
 #include "mdns.h"
 #include "esp_http_server.h"
 #include "esp_http_client.h"
@@ -41,12 +43,16 @@
 #include "page.h"   // dashboard HTML/CSS/JS (const char PAGE[])
 
 // ---- config ----
+#if __has_include("wifi_credentials.h")
+#include "wifi_credentials.h"
+#else
 // Set your Wi-Fi credentials here before flashing.
 static const char* WIFI_SSID = "YOUR_WIFI_SSID";
 static const char* WIFI_PASS = "YOUR_WIFI_PASSWORD";
 // Required for anything that changes device state (ban, block/unblock, update settings).
 // Set this to a custom passphrase -- mutating endpoints are locked while set to "changeme".
 static const char* ADMIN_TOKEN = "changeme";
+#endif
 static const char* UPSTREAM_IP = "9.9.9.9";      // Quad9
 static const uint16_t DNS_PORT = 53;
 static const char* FS_BASE = "/lfs";
@@ -79,6 +85,23 @@ static void jescInto(char* dst, size_t dstsz, const char* src) {   // JSON-escap
   dst[o] = 0;
 }
 
+static void urlDecode(char* dst, const char* src, size_t dstsz) {
+  if (!dst || dstsz == 0) return;
+  size_t d = 0;
+  for (size_t i = 0; src && src[i] && d + 1 < dstsz; i++) {
+    if (src[i] == '+') {
+      dst[d++] = ' ';
+    } else if (src[i] == '%' && src[i+1] && src[i+2]) {
+      char hex[3] = { src[i+1], src[i+2], 0 };
+      dst[d++] = (char)strtol(hex, NULL, 16);
+      i += 2;
+    } else {
+      dst[d++] = src[i];
+    }
+  }
+  dst[d] = 0;
+}
+
 // ---- globals ----
 static httpd_handle_t webServer = nullptr;
 static esp_netif_t* staNetif = nullptr;
@@ -87,9 +110,21 @@ static struct sockaddr_in upstreamAddr;
 static FILE* blocklist = nullptr;
 static uint32_t numHashes = 0, totalBlocked = 0, totalAllowed = 0;
 
+struct BlockLogEntry {
+  uint32_t epoch;
+  uint32_t clientIp;
+  uint16_t qtype;
+  char domain[96];
+};
+static const int MAX_BLOCK_LOG = 64;
+static BlockLogEntry blockLog[MAX_BLOCK_LOG];
+static int blockLogHead = 0;
+static int blockLogCount = 0;
+
 struct Dev {
   uint32_t ip;
   uint8_t mac[6];
+  char name[32];
   uint32_t blocked;
   uint32_t allowed;
   uint64_t lastSeen;
@@ -98,6 +133,14 @@ struct Dev {
 static const int MAX_CLIENTS = 96;
 static Dev clients[MAX_CLIENTS];
 static int numClients = 0;
+
+struct DevName {
+  uint32_t ip;
+  char name[32];
+};
+static const int MAX_DEV_NAMES = 64;
+static DevName devNames[MAX_DEV_NAMES];
+static int numDevNames = 0;
 
 static const int MAX_CUSTOM = 128;
 static char customDom[MAX_CUSTOM][256];
@@ -471,6 +514,58 @@ static bool toggleBan(uint32_t ip) {
   return true;
 }
 
+static void loadNames() {
+  numDevNames = 0;
+  FILE* f = fopen("/lfs/names.txt", "r");
+  if (!f) return;
+  char line[128];
+  while (numDevNames < MAX_DEV_NAMES && fgets(line, sizeof(line), f)) {
+    size_t n = strlen(line);
+    while (n && (line[n - 1] == '\n' || line[n - 1] == '\r' || line[n - 1] == ' ')) line[--n] = 0;
+    if (n == 0) continue;
+    char* sp = strchr(line, ' ');
+    if (!sp) continue;
+    *sp = 0;
+    struct in_addr a;
+    if (inet_pton(AF_INET, line, &a) != 1) continue;
+    const char* nm = sp + 1;
+    while (*nm == ' ') nm++;
+    if (!*nm) continue;
+    devNames[numDevNames].ip = a.s_addr;
+    strncpy(devNames[numDevNames].name, nm, sizeof(devNames[0].name) - 1);
+    devNames[numDevNames].name[sizeof(devNames[0].name) - 1] = 0;
+    numDevNames++;
+  }
+  fclose(f);
+}
+
+static bool saveNames() {
+  const char* path = "/lfs/names.txt";
+  char tmp[64];
+  snprintf(tmp, sizeof(tmp), "%s.new", path);
+  FILE* f = fopen(tmp, "w");
+  if (!f) return false;
+  DevName snap[MAX_DEV_NAMES];
+  int count = 0;
+  LOCK();
+  count = numDevNames;
+  for (int i = 0; i < count; i++) snap[i] = devNames[i];
+  UNLOCK();
+
+  bool ok = true;
+  for (int i = 0; i < count; i++) {
+    char s[16];
+    ipToStr(snap[i].ip, s, sizeof(s));
+    if (fprintf(f, "%s %s\n", s, snap[i].name) < 0) { ok = false; break; }
+  }
+  fflush(f);
+  fsync(fileno(f));
+  fclose(f);
+  if (!ok) { remove(tmp); return false; }
+  if (rename(tmp, path) != 0) { remove(tmp); return false; }
+  return true;
+}
+
 // ---------- Client Table & MAC Lookup ----------
 static void getMac(uint32_t ip, uint8_t* mac) {
   memset(mac, 0, 6);
@@ -508,6 +603,14 @@ static Dev* getClient(uint32_t ip) { // caller holds stateMutex
     c->blocked = c->allowed = 0;
     c->lastSeen = now;
     c->banned = isBannedIP(ip);
+    c->name[0] = 0;
+    for (int j = 0; j < numDevNames; j++) {
+      if (devNames[j].ip == ip) {
+        strncpy(c->name, devNames[j].name, sizeof(c->name) - 1);
+        c->name[sizeof(c->name) - 1] = 0;
+        break;
+      }
+    }
     getMac(ip, c->mac);
     return c;
   }
@@ -521,6 +624,14 @@ static Dev* getClient(uint32_t ip) { // caller holds stateMutex
   c->blocked = c->allowed = 0;
   c->lastSeen = now;
   c->banned = isBannedIP(ip);
+  c->name[0] = 0;
+  for (int j = 0; j < numDevNames; j++) {
+    if (devNames[j].ip == ip) {
+      strncpy(c->name, devNames[j].name, sizeof(c->name) - 1);
+      c->name[sizeof(c->name) - 1] = 0;
+      break;
+    }
+  }
   getMac(ip, c->mac);
   return c;
 }
@@ -623,6 +734,38 @@ static DnsTx txTable[MAX_TX];
 static uint8_t dnsRxBuf[1472];
 static uint8_t upRxBuf[1472];
 
+static const char* qtypeToStr(uint16_t qt) {
+  switch (qt) {
+    case 1:   return "A";
+    case 28:  return "AAAA";
+    case 65:  return "HTTPS";
+    case 64:  return "SVCB";
+    case 5:   return "CNAME";
+    case 15:  return "MX";
+    case 16:  return "TXT";
+    case 12:  return "PTR";
+    case 255: return "ANY";
+    default:  return "OTHER";
+  }
+}
+
+static void logBlocked(uint32_t clientIp, const char* domain, uint16_t qtype) { // caller holds stateMutex
+  time_t now = time(NULL);
+  int idx;
+  if (blockLogCount < MAX_BLOCK_LOG) {
+    idx = (blockLogHead + blockLogCount) % MAX_BLOCK_LOG;
+    blockLogCount++;
+  } else {
+    idx = blockLogHead;
+    blockLogHead = (blockLogHead + 1) % MAX_BLOCK_LOG;
+  }
+  blockLog[idx].epoch = (uint32_t)now;
+  blockLog[idx].clientIp = clientIp;
+  blockLog[idx].qtype = qtype;
+  strncpy(blockLog[idx].domain, (domain && domain[0]) ? domain : "banned_client", sizeof(blockLog[idx].domain) - 1);
+  blockLog[idx].domain[sizeof(blockLog[idx].domain) - 1] = 0;
+}
+
 static void dnsTask(void*) {
   // Set both sockets to non-blocking mode for select() event loop
   int f = fcntl(dnsSock, F_GETFL, 0);
@@ -675,6 +818,7 @@ static void dnsTask(void*) {
             if (blocked) {
               totalBlocked++;
               if (c) c->blocked++;
+              logBlocked((uint32_t)cli.sin_addr.s_addr, domain, qtype);
             } else {
               totalAllowed++;
               if (c) c->allowed++;
@@ -1068,6 +1212,12 @@ static void wifiInit() {
   char ip[16];
   getLocalIPStr(ip, sizeof(ip));
   printf("WiFi %s: %s\n", wifiConnected() ? "up" : "connecting in background", ip);
+
+  // Initialize SNTP for real-world blocked log timestamps
+  esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+  esp_sntp_setservername(0, "pool.ntp.org");
+  esp_sntp_setservername(1, "time.google.com");
+  esp_sntp_init();
 }
 
 // ---------- Web Server & Security Hardening ----------
@@ -1189,6 +1339,7 @@ static esp_err_t handleStats(httpd_req_t* req) {
     (unsigned long)esp_get_free_heap_size(), (unsigned long)(up/86400), (unsigned long)((up%86400)/3600), (unsigned long)((up%3600)/60),
     esc1, (unsigned long)iv, esc2);
 
+  uint64_t nowMs = millis64();
   for (int i = 0; i < nc; i++) {
     char ips[16];
     ipToStr(snap[i].ip, ips, sizeof(ips));
@@ -1199,9 +1350,13 @@ static esp_err_t handleStats(httpd_req_t* req) {
     } else {
       snprintf(macBuf, sizeof(macBuf), "--:--:--:--:--:--");
     }
-    sendf(req, buf2, sizeof(buf2), "%s{\"ip\":\"%s\",\"mac\":\"%s\",\"blocked\":%lu,\"allowed\":%lu,\"banned\":%s}",
-      i ? "," : "", ips, macBuf,
-      (unsigned long)snap[i].blocked, (unsigned long)snap[i].allowed, snap[i].banned ? "true" : "false");
+    char escName[64];
+    jescInto(escName, sizeof(escName), snap[i].name);
+    uint64_t lastSeenSec = (nowMs > snap[i].lastSeen) ? ((nowMs - snap[i].lastSeen) / 1000ULL) : 0;
+    sendf(req, buf2, sizeof(buf2), "%s{\"ip\":\"%s\",\"mac\":\"%s\",\"name\":\"%s\",\"blocked\":%lu,\"allowed\":%lu,\"banned\":%s,\"lastSeenSec\":%llu}",
+      i ? "," : "", ips, macBuf, escName,
+      (unsigned long)snap[i].blocked, (unsigned long)snap[i].allowed, snap[i].banned ? "true" : "false",
+      (unsigned long long)lastSeenSec);
   }
 
   sendf(req, buf2, sizeof(buf2), "],\"custom\":[");
@@ -1222,6 +1377,182 @@ static esp_err_t handleStats(httpd_req_t* req) {
   }
   sendf(req, buf2, sizeof(buf2), "]}");
   httpd_resp_send_chunk(req, NULL, 0);
+  return ESP_OK;
+}
+
+static esp_err_t handleLogJson(httpd_req_t* req) {
+  bool auth = checkAuth(req);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+  setSecurityHeaders(req);
+
+  static BlockLogEntry snap[MAX_BLOCK_LOG];
+  int snapCount = 0;
+  int snapHead = 0;
+
+  LOCK();
+  snapCount = blockLogCount;
+  snapHead = blockLogHead;
+  memcpy(snap, blockLog, sizeof(BlockLogEntry) * MAX_BLOCK_LOG);
+  UNLOCK();
+
+  char buf[512], escDom[128], escName[64];
+  sendf(req, buf, sizeof(buf), "[");
+
+  // Iterate newest to oldest
+  for (int i = 0; i < snapCount; i++) {
+    int idx = (snapHead + snapCount - 1 - i) % MAX_BLOCK_LOG;
+    BlockLogEntry* e = &snap[idx];
+
+    char ipStr[16];
+    ipToStr(e->clientIp, ipStr, sizeof(ipStr));
+
+    char macBuf[20] = "--:--:--:--:--:--";
+    char devName[32] = "";
+
+    LOCK();
+    for (int j = 0; j < numClients; j++) {
+      if (clients[j].ip == e->clientIp) {
+        if (auth) {
+          snprintf(macBuf, sizeof(macBuf), "%02x:%02x:%02x:%02x:%02x:%02x",
+            clients[j].mac[0], clients[j].mac[1], clients[j].mac[2],
+            clients[j].mac[3], clients[j].mac[4], clients[j].mac[5]);
+        }
+        strncpy(devName, clients[j].name, sizeof(devName) - 1);
+        devName[sizeof(devName) - 1] = 0;
+        break;
+      }
+    }
+    if (!devName[0]) {
+      for (int j = 0; j < numDevNames; j++) {
+        if (devNames[j].ip == e->clientIp) {
+          strncpy(devName, devNames[j].name, sizeof(devName) - 1);
+          devName[sizeof(devName) - 1] = 0;
+          break;
+        }
+      }
+    }
+    UNLOCK();
+
+    jescInto(escDom, sizeof(escDom), e->domain);
+    jescInto(escName, sizeof(escName), devName);
+
+    sendf(req, buf, sizeof(buf),
+      "%s{\"time\":%lu,\"ip\":\"%s\",\"name\":\"%s\",\"mac\":\"%s\",\"domain\":\"%s\",\"type\":\"%s\",\"action\":\"%s\"}",
+      i ? "," : "",
+      (unsigned long)e->epoch,
+      ipStr,
+      escName,
+      macBuf,
+      escDom,
+      qtypeToStr(e->qtype),
+      (e->qtype == 1) ? "0.0.0.0" : "NODATA"
+    );
+  }
+
+  sendf(req, buf, sizeof(buf), "]");
+  httpd_resp_send_chunk(req, NULL, 0);
+  return ESP_OK;
+}
+
+static esp_err_t handleSetName(httpd_req_t* req) {
+  if (!checkAuth(req)) return sendUnauthorized(req);
+  char ipStr[32] = "";
+  char rawName[64] = "";
+  if (!getQueryArg(req, "ip", ipStr, sizeof(ipStr))) {
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing ip");
+    return ESP_FAIL;
+  }
+  struct in_addr a;
+  if (inet_pton(AF_INET, ipStr, &a) != 1) {
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid ip");
+    return ESP_FAIL;
+  }
+  uint32_t ip = a.s_addr;
+  char decodedName[32] = "";
+  if (getQueryArg(req, "name", rawName, sizeof(rawName))) {
+    urlDecode(decodedName, rawName, sizeof(decodedName));
+  }
+
+  LOCK();
+  // Update in active clients table
+  for (int i = 0; i < numClients; i++) {
+    if (clients[i].ip == ip) {
+      strncpy(clients[i].name, decodedName, sizeof(clients[i].name) - 1);
+      clients[i].name[sizeof(clients[i].name) - 1] = 0;
+      break;
+    }
+  }
+  // Update in devNames persistence table
+  int found = -1;
+  for (int i = 0; i < numDevNames; i++) {
+    if (devNames[i].ip == ip) { found = i; break; }
+  }
+  if (decodedName[0]) {
+    if (found >= 0) {
+      strncpy(devNames[found].name, decodedName, sizeof(devNames[0].name) - 1);
+      devNames[found].name[sizeof(devNames[0].name) - 1] = 0;
+    } else if (numDevNames < MAX_DEV_NAMES) {
+      devNames[numDevNames].ip = ip;
+      strncpy(devNames[numDevNames].name, decodedName, sizeof(devNames[0].name) - 1);
+      devNames[numDevNames].name[sizeof(devNames[0].name) - 1] = 0;
+      numDevNames++;
+    }
+  } else {
+    // Clear name if empty
+    if (found >= 0) {
+      for (int i = found; i < numDevNames - 1; i++) devNames[i] = devNames[i + 1];
+      numDevNames--;
+    }
+  }
+  UNLOCK();
+
+  saveNames();
+  httpd_resp_set_type(req, "text/plain");
+  httpd_resp_send(req, "ok", 2);
+  return ESP_OK;
+}
+
+static esp_err_t handleDelClient(httpd_req_t* req) {
+  if (!checkAuth(req)) return sendUnauthorized(req);
+  char ipStr[32] = "";
+  if (!getQueryArg(req, "ip", ipStr, sizeof(ipStr))) {
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing ip");
+    return ESP_FAIL;
+  }
+  struct in_addr a;
+  if (inet_pton(AF_INET, ipStr, &a) != 1) {
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid ip");
+    return ESP_FAIL;
+  }
+  uint32_t ip = a.s_addr;
+
+  LOCK();
+  // Remove from clients table
+  for (int i = 0; i < numClients; i++) {
+    if (clients[i].ip == ip) {
+      for (int j = i; j < numClients - 1; j++) clients[j] = clients[j + 1];
+      numClients--;
+      break;
+    }
+  }
+  // Remove from devNames table
+  for (int i = 0; i < numDevNames; i++) {
+    if (devNames[i].ip == ip) {
+      for (int j = i; j < numDevNames - 1; j++) devNames[j] = devNames[j + 1];
+      numDevNames--;
+      break;
+    }
+  }
+  UNLOCK();
+
+  saveNames();
+  httpd_resp_set_type(req, "text/plain");
+  httpd_resp_send(req, "ok", 2);
   return ESP_OK;
 }
 
@@ -1384,19 +1715,22 @@ static void webServerInit() {
   hc.uri_match_fn = httpd_uri_match_wildcard;
   hc.max_open_sockets = 5;
   hc.lru_purge_enable = true;
-  hc.max_uri_handlers = 8;
+  hc.max_uri_handlers = 16;
 
   ESP_ERROR_CHECK(httpd_start(&webServer, &hc));
 
   static const httpd_uri_t routes[] = {
     { "/",            HTTP_GET,  handleRoot,       NULL },
     { "/stats.json",  HTTP_GET,  handleStats,      NULL },
+    { "/log.json",    HTTP_GET,  handleLogJson,    NULL },
     { "/ban",         HTTP_POST, handleBan,        NULL },
     { "/addblock",    HTTP_POST, handleAddBlock,   NULL },
     { "/unblock",     HTTP_POST, handleUnblock,    NULL },
     { "/fetchnow",    HTTP_POST, handleFetchNow,   NULL },
     { "/setupdate",   HTTP_POST, handleSetUpdate,  NULL },
     { "/upload",      HTTP_POST, handleUpload,     NULL },
+    { "/setname",     HTTP_POST, handleSetName,    NULL },
+    { "/delclient",   HTTP_POST, handleDelClient,  NULL },
   };
   for (auto& r : routes) {
     esp_err_t e = httpd_register_uri_handler(webServer, &r);
@@ -1409,6 +1743,7 @@ static void cleanOrphanFiles() {
   remove(BLOCKLIST_NEW);
   remove("/lfs/custom.txt.new");
   remove("/lfs/banned.txt.new");
+  remove("/lfs/names.txt.new");
   remove("/lfs/update.cfg.new");
 }
 
@@ -1531,8 +1866,9 @@ extern "C" void app_main() {
 
   loadCustom();
   loadBanned();
+  loadNames();
   loadUpdateCfg();
-  printf("custom: %d, banned: %d\n", numCustom, numBanned);
+  printf("custom: %d, banned: %d, names: %d\n", numCustom, numBanned, numDevNames);
 
   wifiInit();
   mdnsInit();

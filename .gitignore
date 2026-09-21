@@ -39,3 +39,7 @@ venv/
 *.bin.sha256
 *.tmp
 *.new
+
+# Local private credentials (never committed)
+*credentials.h
+wifi_credentials.h

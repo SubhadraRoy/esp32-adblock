@@ -57,16 +57,20 @@ curl -s -H "X-Admin-Token: your_token" http://192.168.1.50/stats.json
     {
       "ip": "192.168.1.101",
       "mac": "aa:bb:cc:dd:ee:01",
+      "name": "Living Room TV",
       "blocked": 842,
       "allowed": 9210,
-      "banned": false
+      "banned": false,
+      "lastSeenSec": 14
     },
     {
       "ip": "192.168.1.102",
       "mac": "aa:bb:cc:dd:ee:02",
+      "name": "Work Laptop",
       "blocked": 12,
       "allowed": 412,
-      "banned": false
+      "banned": false,
+      "lastSeenSec": 1420
     }
   ],
   "custom": [
@@ -78,7 +82,78 @@ curl -s -H "X-Admin-Token: your_token" http://192.168.1.50/stats.json
 
 ---
 
-### 2. Add Custom Block Domain (`POST /addblock`)
+### 2. Blocked Activity Log (`GET /log.json`)
+Retrieves the onboard circular buffer (up to 64 entries) of recent blocked DNS queries with millisecond resolution timestamps, client IP, friendly device name, and query details.
+
+- **URL:** `/log.json`
+- **Method:** `GET`
+- **Auth Required:** Optional (client MAC masked as `--:--:--:--:--:--` if unauthenticated)
+
+#### Example Response:
+```json
+[
+  {
+    "time": 1726932450,
+    "ip": "192.168.1.101",
+    "name": "Living Room TV",
+    "mac": "aa:bb:cc:dd:ee:01",
+    "domain": "ads.samsung.com",
+    "type": "A",
+    "action": "0.0.0.0"
+  },
+  {
+    "time": 1726932442,
+    "ip": "192.168.1.102",
+    "name": "Work Laptop",
+    "mac": "aa:bb:cc:dd:ee:02",
+    "domain": "telemetry.microsoft.com",
+    "type": "AAAA",
+    "action": "NODATA"
+  }
+]
+```
+
+---
+
+### 3. Rename Device (`POST /setname`)
+Assigns or clears a custom friendly name for a client IP address. Persisted atomically to `/lfs/names.txt` across reboots.
+
+- **URL:** `/setname?ip=<client_ip>&name=<friendly_name>`
+- **Method:** `POST`
+- **Auth Required:** Yes
+
+#### Parameters:
+| Name | Type | Description |
+| :--- | :--- | :--- |
+| `ip` | String | Client IPv4 address (e.g. `192.168.1.101`) |
+| `name` | String | URL-encoded device alias (e.g. `Smart%20TV`, max 31 chars). Leave empty to clear. |
+
+#### Example Request:
+```bash
+curl -X POST -H "X-Admin-Token: your_token" "http://192.168.1.50/setname?ip=192.168.1.101&name=Living%20Room%20TV"
+```
+#### Response:
+`ok` (HTTP 200)
+
+---
+
+### 4. Delete Client / Offline Device (`POST /delclient`)
+Manually purges a device from the client tracking table and clears any stored alias from `/lfs/names.txt`.
+
+- **URL:** `/delclient?ip=<client_ip>`
+- **Method:** `POST`
+- **Auth Required:** Yes
+
+#### Example Request:
+```bash
+curl -X POST -H "X-Admin-Token: your_token" "http://192.168.1.50/delclient?ip=192.168.1.102"
+```
+#### Response:
+`ok` (HTTP 200)
+
+---
+
+### 5. Add Custom Block Domain (`POST /addblock`)
 Adds a domain to the custom blacklist. Stored persistently in `/lfs/custom.txt`.
 
 - **URL:** `/addblock?d=<domain>`
@@ -99,7 +174,7 @@ curl -X POST -H "X-Admin-Token: your_token" "http://192.168.1.50/addblock?d=ads.
 
 ---
 
-### 3. Remove Custom Block Domain (`POST /unblock`)
+### 6. Remove Custom Block Domain (`POST /unblock`)
 Removes a previously added custom domain from the blacklist.
 
 - **URL:** `/unblock?d=<domain>`
@@ -115,7 +190,7 @@ curl -X POST -H "X-Admin-Token: your_token" "http://192.168.1.50/unblock?d=ads.e
 
 ---
 
-### 4. Toggle Client Ban (`POST /ban`)
+### 7. Toggle Client Ban (`POST /ban`)
 Toggles DNS resolution ban for a specific client IP address. Banned clients receive `0.0.0.0` for all DNS queries.
 
 - **URL:** `/ban?ip=<client_ip>`
@@ -131,7 +206,7 @@ curl -X POST -H "X-Admin-Token: your_token" "http://192.168.1.50/ban?ip=192.168.
 
 ---
 
-### 5. Binary Blocklist Upload (`POST /upload`)
+### 8. Binary Blocklist Upload (`POST /upload`)
 Uploads a pre-compiled, sorted 40-bit binary blocklist to flash memory.
 
 - **URL:** `/upload`
@@ -155,7 +230,7 @@ curl -X POST -H "X-Admin-Token: your_token" \
 
 ---
 
-### 6. Configure Auto-Update (`POST /setupdate`)
+### 9. Configure Auto-Update (`POST /setupdate`)
 Configures the remote blocklist auto-update parameters.
 
 - **URL:** `/setupdate?u=<https_url>&h=<hours>`
@@ -178,7 +253,7 @@ curl -X POST -H "X-Admin-Token: your_token" \
 
 ---
 
-### 7. Trigger Manual Fetch (`POST /fetchnow`)
+### 10. Trigger Manual Fetch (`POST /fetchnow`)
 Asynchronously triggers an immediate background blocklist download using the configured update URL.
 
 - **URL:** `/fetchnow`

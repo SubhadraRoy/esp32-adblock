@@ -195,6 +195,10 @@ tbody tr:last-child td{border-bottom:none}
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
     System &amp; Updates
   </button>
+  <button class="tab-btn" data-tab="tab-logs" onclick="switchTab('tab-logs')">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+    Blocked Log <span class="badge" id="tabLogCount" style="font-size:10px;margin-left:2px;color:var(--text-dim)">(0)</span>
+  </button>
 </nav>
 
 <div class="main">
@@ -250,14 +254,15 @@ tbody tr:last-child td{border-bottom:none}
 
   <!-- Tab 2: Clients -->
   <div class="tab-pane" id="tab-clients">
+    <!-- Active Clients Section -->
     <div class="table-card">
       <div class="table-header">
         <div class="table-title">
-          <span>Connected Network Clients</span>
-          <span class="badge" id="clientBadge">0</span>
+          <span>Active Clients (Online)</span>
+          <span class="badge" id="onlineBadge" style="color:var(--emerald)">0</span>
         </div>
         <div class="table-actions">
-          <input class="search-input" id="clientSearch" placeholder="Search IP or MAC..." oninput="renderClients()">
+          <input class="search-input" id="clientSearch" placeholder="Filter name, IP, MAC..." oninput="renderClients()">
           <button class="btn sm" onclick="exportClientsCSV()" title="Export clients to CSV">Export CSV</button>
         </div>
       </div>
@@ -265,6 +270,7 @@ tbody tr:last-child td{border-bottom:none}
         <table id="clientTable">
           <thead>
             <tr>
+              <th>Device Name</th>
               <th>Client IP</th>
               <th>MAC Address</th>
               <th>Blocked</th>
@@ -274,7 +280,38 @@ tbody tr:last-child td{border-bottom:none}
             </tr>
           </thead>
           <tbody>
-            <tr><td colspan="6" class="dim" style="text-align:center;padding:18px">Discovering network clients...</td></tr>
+            <tr><td colspan="7" class="dim" style="text-align:center;padding:18px">Discovering network clients...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Offline Devices Section -->
+    <div class="table-card">
+      <div class="table-header">
+        <div class="table-title">
+          <span>Offline Devices</span>
+          <span class="badge" id="offlineBadge" style="color:var(--text-dim)">0</span>
+        </div>
+      </div>
+      <div class="hint-text" style="padding-top:10px">
+        Devices inactive for &gt;15 minutes. Strictly deduplicated &mdash; devices never repeat between active and offline lists.
+      </div>
+      <div class="table-wrap">
+        <table id="offlineTable">
+          <thead>
+            <tr>
+              <th>Device Name</th>
+              <th>Client IP</th>
+              <th>MAC Address</th>
+              <th>Last Active</th>
+              <th>Blocked</th>
+              <th>Passed</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td colspan="7" class="dim" style="text-align:center;padding:18px">No offline devices recorded</td></tr>
           </tbody>
         </table>
       </div>
@@ -375,6 +412,40 @@ tbody tr:last-child td{border-bottom:none}
     </div>
   </div>
 
+  <!-- Tab 5: Blocked Log -->
+  <div class="tab-pane" id="tab-logs">
+    <div class="table-card">
+      <div class="table-header">
+        <div class="table-title">
+          <span>Blocked DNS Activity Log</span>
+          <span class="badge" id="logBadge" style="color:var(--rose)">0</span>
+        </div>
+        <div class="table-actions">
+          <input class="search-input" id="logSearch" placeholder="Filter domain, IP, name..." oninput="renderLogs()">
+          <button class="btn sm" onclick="fetchLogs()" title="Refresh blocked log">Refresh</button>
+          <button class="btn sm" onclick="exportLogsCSV()" title="Export log to CSV">Export CSV</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table id="logTable">
+          <thead>
+            <tr>
+              <th>Date &amp; Time</th>
+              <th>Blocked Domain</th>
+              <th>Client Device</th>
+              <th>MAC Address</th>
+              <th>Type</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td colspan="6" class="dim" style="text-align:center;padding:18px">No blocked queries recorded yet</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
 </div>
 
 <!-- Admin Token Modal -->
@@ -390,6 +461,22 @@ tbody tr:last-child td{border-bottom:none}
       <button class="btn" onclick="clearToken()">Clear</button>
       <button class="btn" onclick="closeAuthModal()">Cancel</button>
       <button class="btn primary" onclick="saveToken()">Save Token</button>
+    </div>
+  </div>
+</div>
+
+<!-- Device Name Edit Modal -->
+<div class="modal-backdrop" id="nameModal" onclick="if(event.target===this)closeNameModal()">
+  <div class="modal-box">
+    <h3>Edit Device Name</h3>
+    <p id="nameModalSub" style="font-family:var(--mono);color:var(--sky)">192.168.0.x</p>
+    <div style="margin-top:10px">
+      <input type="text" id="nameModalInput" class="form-input" style="width:100%" placeholder="e.g. Living Room TV, Work Laptop" maxlength="31" autocomplete="off">
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="clearDeviceName()">Clear Name</button>
+      <button class="btn" onclick="closeNameModal()">Cancel</button>
+      <button class="btn primary" onclick="saveDeviceName()">Save Name</button>
     </div>
   </div>
 </div>
@@ -423,6 +510,7 @@ function notify(msg, isErr = false) {
 function switchTab(tabId) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tabId));
   document.querySelectorAll('.tab-pane').forEach(p => p.classList.toggle('active', p.id === tabId));
+  if (tabId === 'tab-logs') fetchLogs();
 }
 
 // Token State Management
@@ -632,6 +720,11 @@ async function loadData() {
     if (document.activeElement !== $('updateInterval')) $('updateInterval').value = s.upiv || 24;
     $('updateStatusTxt').textContent = s.upstat || '—';
 
+    // Auto-refresh Blocked Log if Tab 5 is open
+    if ($('tab-logs') && $('tab-logs').classList.contains('active')) {
+      fetchLogs();
+    }
+
   } catch(err) {
     clearTimeout(timer);
     failCount++;
@@ -643,45 +736,236 @@ async function loadData() {
   }
 }
 
-// Client Table Renderer with Live Search Filter
+// Format relative time for inactive clients
+function formatAgo(sec) {
+  if (!sec || sec < 60) return `${sec || 0}s ago`;
+  const m = Math.floor(sec / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ${m % 60}m ago`;
+  const d = Math.floor(h / 24);
+  return `${d}d ${h % 24}h ago`;
+}
+
+// Device Name Modal Management
+let activeEditIp = '';
+function openEditNameModal(ip, currentName) {
+  activeEditIp = ip;
+  $('nameModalSub').textContent = 'Device IP: ' + ip;
+  $('nameModalInput').value = (currentName && currentName !== '—') ? currentName : '';
+  $('nameModal').style.display = 'flex';
+  setTimeout(() => $('nameModalInput').focus(), 50);
+}
+
+function closeNameModal() {
+  $('nameModal').style.display = 'none';
+  activeEditIp = '';
+}
+
+async function saveDeviceName() {
+  if (!activeEditIp) return;
+  const newName = $('nameModalInput').value.trim();
+  try {
+    await apiPost('/setname', { ip: activeEditIp, name: newName });
+    notify(`Name updated for ${activeEditIp}`);
+    closeNameModal();
+    await loadData();
+    if ($('tab-logs') && $('tab-logs').classList.contains('active')) fetchLogs();
+  } catch(_) {}
+}
+
+async function clearDeviceName() {
+  if (!activeEditIp) return;
+  try {
+    await apiPost('/setname', { ip: activeEditIp, name: '' });
+    notify(`Name cleared for ${activeEditIp}`);
+    closeNameModal();
+    await loadData();
+    if ($('tab-logs') && $('tab-logs').classList.contains('active')) fetchLogs();
+  } catch(_) {}
+}
+
+async function handleDelClient(ip) {
+  if (!ip) return;
+  if (!confirm(`Delete device ${ip} from records?`)) return;
+  try {
+    await apiPost('/delclient', { ip });
+    notify(`Device ${ip} removed`);
+    await loadData();
+  } catch(_) {}
+}
+
+// Client Table Renderer with Deduplicated Active Clients vs Offline Devices
+const ONLINE_THRESHOLD_SEC = 900; // 15 minutes inactivity threshold
+
 function renderClients() {
   const q = ($('clientSearch').value || '').toLowerCase().trim();
-  const filtered = rawClients.filter(c => !q || (c.ip && c.ip.includes(q)) || (c.mac && c.mac.toLowerCase().includes(q)));
-  filtered.sort((a,b) => (b.blocked + b.allowed) - (a.blocked + a.allowed));
+  const filtered = rawClients.filter(c => !q ||
+    (c.ip && c.ip.includes(q)) ||
+    (c.mac && c.mac.toLowerCase().includes(q)) ||
+    (c.name && c.name.toLowerCase().includes(q)));
 
-  $('clientBadge').textContent = filtered.length;
-  const tbody = $('clientTable').tBodies[0];
-  if (!filtered.length) {
-    tbody.innerHTML = `<tr><td colspan="6" class="dim" style="text-align:center;padding:18px">${q ? 'No clients match "' + esc(q) + '"' : 'No clients connected yet'}</td></tr>`;
-    return;
+  const online = filtered.filter(c => (c.lastSeenSec || 0) <= ONLINE_THRESHOLD_SEC);
+  const offline = filtered.filter(c => (c.lastSeenSec || 0) > ONLINE_THRESHOLD_SEC);
+
+  online.sort((a,b) => (b.blocked + b.allowed) - (a.blocked + a.allowed));
+  offline.sort((a,b) => (a.lastSeenSec || 0) - (b.lastSeenSec || 0));
+
+  $('onlineBadge').textContent = online.length;
+  $('offlineBadge').textContent = offline.length;
+  $('tabClientCount').textContent = `(${rawClients.length})`;
+
+  // Render Active Clients Table
+  const tbodyOnline = $('clientTable').tBodies[0];
+  if (!online.length) {
+    tbodyOnline.innerHTML = `<tr><td colspan="7" class="dim" style="text-align:center;padding:18px">${q ? 'No active clients match filter' : 'No active clients online'}</td></tr>`;
+  } else {
+    tbodyOnline.innerHTML = online.map(c => {
+      const tot = c.blocked + c.allowed;
+      const rPct = tot > 0 ? ((c.blocked / tot) * 100).toFixed(0) : '0';
+      return `<tr>
+        <td>
+          <span class="font-semibold">${esc(c.name || '—')}</span>
+          <button class="btn sm" onclick="openEditNameModal('${esc(c.ip)}','${esc(c.name||'')}')" title="Rename device" style="padding:2px 6px;font-size:10px;margin-left:5px">Edit</button>
+        </td>
+        <td class="mono font-semibold">
+          <span onclick="copyText('${esc(c.ip)}','IP copied')" style="cursor:pointer" title="Click to copy">${esc(c.ip)}</span>
+          ${c.banned ? ' <span class="badge-version" style="background:var(--rose-bg);color:var(--rose)">BANNED</span>' : ''}
+        </td>
+        <td class="mono dim">
+          <span onclick="copyText('${esc(c.mac)}','MAC copied')" style="cursor:pointer" title="Click to copy">${esc(c.mac)}</span>
+        </td>
+        <td class="mono rose font-medium">${fmt(c.blocked)}</td>
+        <td class="mono emerald font-medium">${fmt(c.allowed)}</td>
+        <td style="min-width:110px">
+          <div style="display:flex;align-items:center;gap:8px">
+            <div class="ratio-bar grow" style="margin:0"><div class="ratio-bar-fill" style="width:${rPct}%"></div></div>
+            <span class="mono dim" style="font-size:11px">${rPct}%</span>
+          </div>
+        </td>
+        <td>
+          <button class="btn sm ${c.banned ? '' : 'danger'}" data-ip="${esc(c.ip)}" onclick="handleToggleBan(this)">
+            ${c.banned ? 'Unban' : 'Ban Client'}
+          </button>
+        </td>
+      </tr>`;
+    }).join('');
   }
 
-  tbody.innerHTML = filtered.map(c => {
-    const tot = c.blocked + c.allowed;
-    const rPct = tot > 0 ? ((c.blocked / tot) * 100).toFixed(0) : '0';
-    return `<tr>
-      <td class="mono font-semibold">
+  // Render Offline Devices Table (Strictly Deduplicated)
+  const tbodyOffline = $('offlineTable').tBodies[0];
+  if (!offline.length) {
+    tbodyOffline.innerHTML = `<tr><td colspan="7" class="dim" style="text-align:center;padding:18px">${q ? 'No offline devices match filter' : 'No offline devices found'}</td></tr>`;
+  } else {
+    tbodyOffline.innerHTML = offline.map(c => `<tr>
+      <td>
+        <span class="font-semibold">${esc(c.name || '—')}</span>
+        <button class="btn sm" onclick="openEditNameModal('${esc(c.ip)}','${esc(c.name||'')}')" title="Rename device" style="padding:2px 6px;font-size:10px;margin-left:5px">Edit</button>
+      </td>
+      <td class="mono">
         <span onclick="copyText('${esc(c.ip)}','IP copied')" style="cursor:pointer" title="Click to copy">${esc(c.ip)}</span>
         ${c.banned ? ' <span class="badge-version" style="background:var(--rose-bg);color:var(--rose)">BANNED</span>' : ''}
       </td>
       <td class="mono dim">
         <span onclick="copyText('${esc(c.mac)}','MAC copied')" style="cursor:pointer" title="Click to copy">${esc(c.mac)}</span>
       </td>
+      <td class="mono dim">${formatAgo(c.lastSeenSec)}</td>
       <td class="mono rose font-medium">${fmt(c.blocked)}</td>
       <td class="mono emerald font-medium">${fmt(c.allowed)}</td>
-      <td style="min-width:110px">
-        <div style="display:flex;align-items:center;gap:8px">
-          <div class="ratio-bar grow" style="margin:0"><div class="ratio-bar-fill" style="width:${rPct}%"></div></div>
-          <span class="mono dim" style="font-size:11px">${rPct}%</span>
-        </div>
+      <td style="display:flex;gap:6px">
+        <button class="btn sm danger" onclick="handleDelClient('${esc(c.ip)}')">Delete</button>
+        <button class="btn sm ${c.banned ? '' : 'danger'}" data-ip="${esc(c.ip)}" onclick="handleToggleBan(this)">
+          ${c.banned ? 'Unban' : 'Ban'}
+        </button>
+      </td>
+    </tr>`).join('');
+  }
+}
+
+// Blocked Activity Log Engine
+let rawLogs = [];
+let isFetchingLogs = false;
+
+async function fetchLogs() {
+  if (isFetchingLogs) return;
+  isFetchingLogs = true;
+  try {
+    const r = await fetch('/log.json', {
+      headers: { 'X-Admin-Token': getToken() }
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    rawLogs = await r.json();
+    renderLogs();
+  } catch(e) {
+    // Background polling handles transient errors
+  } finally {
+    isFetchingLogs = false;
+  }
+}
+
+function renderLogs() {
+  const q = ($('logSearch').value || '').toLowerCase().trim();
+  const filtered = rawLogs.filter(item => !q ||
+    (item.domain && item.domain.toLowerCase().includes(q)) ||
+    (item.ip && item.ip.includes(q)) ||
+    (item.name && item.name.toLowerCase().includes(q)) ||
+    (item.mac && item.mac.toLowerCase().includes(q)) ||
+    (item.type && item.type.toLowerCase().includes(q)));
+
+  $('logBadge').textContent = filtered.length;
+  $('tabLogCount').textContent = `(${rawLogs.length})`;
+
+  const tbody = $('logTable').tBodies[0];
+  if (!filtered.length) {
+    tbody.innerHTML = `<tr><td colspan="6" class="dim" style="text-align:center;padding:18px">${q ? 'No blocked queries match "' + esc(q) + '"' : 'No blocked queries logged yet'}</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filtered.map(item => {
+    let timeStr = 'Boot';
+    if (item.time && item.time > 1700000000) {
+      const d = new Date(item.time * 1000);
+      timeStr = d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    } else if (item.time) {
+      timeStr = `+${item.time}s`;
+    }
+    return `<tr>
+      <td class="mono dim" style="white-space:nowrap">${esc(timeStr)}</td>
+      <td class="mono font-semibold rose">
+        <span onclick="copyText('${esc(item.domain)}','Domain copied')" style="cursor:pointer" title="Click to copy">${esc(item.domain)}</span>
       </td>
       <td>
-        <button class="btn sm ${c.banned ? '' : 'danger'}" data-ip="${esc(c.ip)}" onclick="handleToggleBan(this)">
-          ${c.banned ? 'Unban' : 'Ban Client'}
-        </button>
+        <span class="font-medium">${esc(item.name || item.ip)}</span>
+        ${item.name ? ` <span class="mono dim" style="font-size:11px">(${esc(item.ip)})</span>` : ''}
+        <button class="btn sm" onclick="openEditNameModal('${esc(item.ip)}','${esc(item.name||'')}')" title="Rename device" style="padding:1px 5px;font-size:9px;margin-left:4px">Edit</button>
+      </td>
+      <td class="mono dim">
+        <span onclick="copyText('${esc(item.mac)}','MAC copied')" style="cursor:pointer" title="Click to copy">${esc(item.mac)}</span>
+      </td>
+      <td>
+        <span class="badge-version" style="background:var(--sky-bg);color:var(--sky)">${esc(item.type || 'A')}</span>
+      </td>
+      <td>
+        <span class="badge-version" style="background:var(--rose-bg);color:var(--rose)">${esc(item.action || '0.0.0.0')}</span>
       </td>
     </tr>`;
   }).join('');
+}
+
+function exportLogsCSV() {
+  if (!rawLogs.length) return notify('No logs to export', true);
+  let csv = 'Timestamp,Date Time,Blocked Domain,Client IP,Device Name,MAC Address,Query Type,Action\n';
+  rawLogs.forEach(l => {
+    const dt = l.time > 1700000000 ? new Date(l.time * 1000).toISOString() : '';
+    csv += `${l.time},"${dt}","${l.domain}","${l.ip}","${l.name || ''}","${l.mac}","${l.type}","${l.action}"\n`;
+  });
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `esp32_adblock_logs_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 // Custom Rules Table Renderer with Live Search Filter
@@ -834,9 +1118,10 @@ $('uploadForm').onsubmit = async e => {
 // Export Clients to CSV
 function exportClientsCSV() {
   if (!rawClients.length) return notify('No clients to export', true);
-  let csv = 'Client IP,MAC Address,Blocked Queries,Passed Queries,Banned\n';
+  let csv = 'Client IP,Device Name,MAC Address,Status,Last Active (sec),Blocked Queries,Passed Queries,Banned\n';
   rawClients.forEach(c => {
-    csv += `"${c.ip}","${c.mac}",${c.blocked},${c.allowed},${c.banned?'YES':'NO'}\n`;
+    const isOnline = (c.lastSeenSec || 0) <= 900;
+    csv += `"${c.ip}","${c.name || ''}","${c.mac}","${isOnline ? 'Online' : 'Offline'}",${c.lastSeenSec || 0},${c.blocked},${c.allowed},${c.banned ? 'YES' : 'NO'}\n`;
   });
   const blob = new Blob([csv], { type: 'text/csv' });
   const url = URL.createObjectURL(blob);
@@ -857,14 +1142,17 @@ window.addEventListener('keydown', e => {
   else if (e.key === '2') switchTab('tab-clients');
   else if (e.key === '3') switchTab('tab-rules');
   else if (e.key === '4') switchTab('tab-system');
+  else if (e.key === '5') switchTab('tab-logs');
   else if (e.key === '/') {
     e.preventDefault();
     const activeTab = document.querySelector('.tab-pane.active').id;
     if (activeTab === 'tab-clients') $('clientSearch').focus();
     else if (activeTab === 'tab-rules') $('customSearch').focus();
+    else if (activeTab === 'tab-logs') $('logSearch').focus();
     else switchTab('tab-clients'), setTimeout(() => $('clientSearch').focus(), 50);
   } else if (e.key === 'Escape') {
     closeAuthModal();
+    closeNameModal();
   }
 });
 
