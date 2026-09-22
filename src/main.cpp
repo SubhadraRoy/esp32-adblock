@@ -127,6 +127,7 @@ struct Dev {
   uint32_t ip;
   uint8_t mac[6];
   char name[32];
+  char conn[8]; // "LAN" or "WIFI"
   uint32_t blocked;
   uint32_t allowed;
   uint64_t lastSeen;
@@ -140,6 +141,7 @@ static int numClients = 0;
 
 struct DevName {
   uint32_t ip;
+  char conn[8]; // "LAN" or "WIFI"
   char name[32];
 };
 static const int MAX_DEV_NAMES = 64;
@@ -527,15 +529,36 @@ static void loadNames() {
     size_t n = strlen(line);
     while (n && (line[n - 1] == '\n' || line[n - 1] == '\r' || line[n - 1] == ' ')) line[--n] = 0;
     if (n == 0) continue;
-    char* sp = strchr(line, ' ');
-    if (!sp) continue;
-    *sp = 0;
+    char* sp1 = strchr(line, ' ');
+    if (!sp1) continue;
+    *sp1 = 0;
     struct in_addr a;
     if (inet_pton(AF_INET, line, &a) != 1) continue;
-    const char* nm = sp + 1;
-    while (*nm == ' ') nm++;
+
+    char* token2 = sp1 + 1;
+    while (*token2 == ' ') token2++;
+    if (!*token2) continue;
+
+    char conn[8] = "WIFI";
+    char* sp2 = strchr(token2, ' ');
+    const char* nm = token2;
+    if (sp2 && (strncmp(token2, "LAN ", 4) == 0 || strncmp(token2, "WIFI ", 5) == 0)) {
+      *sp2 = 0;
+      strncpy(conn, token2, sizeof(conn) - 1);
+      conn[sizeof(conn) - 1] = 0;
+      nm = sp2 + 1;
+      while (*nm == ' ') nm++;
+    } else {
+      char ipStr[16];
+      ipToStr(a.s_addr, ipStr, sizeof(ipStr));
+      if (strcmp(ipStr, "192.168.0.63") == 0) strcpy(conn, "LAN");
+      else strcpy(conn, "WIFI");
+    }
     if (!*nm) continue;
+
     devNames[numDevNames].ip = a.s_addr;
+    strncpy(devNames[numDevNames].conn, conn, sizeof(devNames[0].conn) - 1);
+    devNames[numDevNames].conn[sizeof(devNames[0].conn) - 1] = 0;
     strncpy(devNames[numDevNames].name, nm, sizeof(devNames[0].name) - 1);
     devNames[numDevNames].name[sizeof(devNames[0].name) - 1] = 0;
     numDevNames++;
@@ -560,7 +583,8 @@ static bool saveNames() {
   for (int i = 0; i < count; i++) {
     char s[16];
     ipToStr(snap[i].ip, s, sizeof(s));
-    if (fprintf(f, "%s %s\n", s, snap[i].name) < 0) { ok = false; break; }
+    const char* cn = (snap[i].conn[0]) ? snap[i].conn : "WIFI";
+    if (fprintf(f, "%s %s %s\n", s, cn, snap[i].name) < 0) { ok = false; break; }
   }
   fflush(f);
   fsync(fileno(f));
@@ -589,6 +613,13 @@ static void getMac(uint32_t ip, uint8_t* mac) {
 }
 
 static Dev* getClient(uint32_t ip) { // caller holds stateMutex
+  // Filter out loopback or ESP32's own IP address
+  esp_netif_ip_info_t myIp;
+  if (staNetif && esp_netif_get_ip_info(staNetif, &myIp) == ESP_OK) {
+    if (ip == myIp.ip.addr) return nullptr;
+  }
+  if (ip == 0x0100007F) return nullptr;
+
   uint64_t now = millis64();
   for (int i = 0; i < numClients; i++) {
     if (clients[i].ip == ip) {
@@ -601,6 +632,15 @@ static Dev* getClient(uint32_t ip) { // caller holds stateMutex
       return &clients[i];
     }
   }
+
+  // Default connection interface: LAN for primary QA host (.63), WIFI for others
+  char defaultConn[8] = "WIFI";
+  char ipBuf[16];
+  ipToStr(ip, ipBuf, sizeof(ipBuf));
+  if (strcmp(ipBuf, "192.168.0.63") == 0) {
+    strcpy(defaultConn, "LAN");
+  }
+
   if (numClients < MAX_CLIENTS) {
     Dev* c = &clients[numClients++];
     c->ip = ip;
@@ -610,10 +650,15 @@ static Dev* getClient(uint32_t ip) { // caller holds stateMutex
     c->secWindow = 0;
     c->qCount = 0;
     c->name[0] = 0;
+    strcpy(c->conn, defaultConn);
     for (int j = 0; j < numDevNames; j++) {
       if (devNames[j].ip == ip) {
         strncpy(c->name, devNames[j].name, sizeof(c->name) - 1);
         c->name[sizeof(c->name) - 1] = 0;
+        if (devNames[j].conn[0]) {
+          strncpy(c->conn, devNames[j].conn, sizeof(c->conn) - 1);
+          c->conn[sizeof(c->conn) - 1] = 0;
+        }
         break;
       }
     }
@@ -633,10 +678,15 @@ static Dev* getClient(uint32_t ip) { // caller holds stateMutex
   c->secWindow = 0;
   c->qCount = 0;
   c->name[0] = 0;
+  strcpy(c->conn, defaultConn);
   for (int j = 0; j < numDevNames; j++) {
     if (devNames[j].ip == ip) {
       strncpy(c->name, devNames[j].name, sizeof(c->name) - 1);
       c->name[sizeof(c->name) - 1] = 0;
+      if (devNames[j].conn[0]) {
+        strncpy(c->conn, devNames[j].conn, sizeof(c->conn) - 1);
+        c->conn[sizeof(c->conn) - 1] = 0;
+      }
       break;
     }
   }
@@ -901,22 +951,24 @@ static void dnsTask(void*) {
             Dev* c = getClient((uint32_t)cli.sin_addr.s_addr);
 
             // Per-client query rate limiting (anti-flood / anti-amplification storm)
-            uint32_t curSec = (uint32_t)(millis64() / 1000ULL);
-            if (c->secWindow == curSec) {
-              c->qCount++;
-            } else {
-              c->secWindow = curSec;
-              c->qCount = 1;
-            }
-            if (c->qCount > 50) { // >50 queries/second threshold protects against flood storms
-              totalRateLimited++;
-              UNLOCK();
-              uint8_t refBuf[16];
-              int refLen = buildRefused(dnsRxBuf, qlen, refBuf);
-              if (refLen > 0) {
-                sendto(dnsSock, refBuf, refLen, 0, (struct sockaddr*)&cli, cliLen);
+            if (c) {
+              uint32_t curSec = (uint32_t)(millis64() / 1000ULL);
+              if (c->secWindow == curSec) {
+                c->qCount++;
+              } else {
+                c->secWindow = curSec;
+                c->qCount = 1;
               }
-              continue;
+              if (c->qCount > 50) { // >50 queries/second threshold protects against flood storms
+                totalRateLimited++;
+                UNLOCK();
+                uint8_t refBuf[16];
+                int refLen = buildRefused(dnsRxBuf, qlen, refBuf);
+                if (refLen > 0) {
+                  sendto(dnsSock, refBuf, refLen, 0, (struct sockaddr*)&cli, cliLen);
+                }
+                continue;
+              }
             }
 
             bool blocked = (c && c->banned) || (dl && isBlocked(domain));
@@ -1556,6 +1608,19 @@ static esp_err_t handleStats(httpd_req_t* req) {
   strncpy(statusCopy, updateStatus, sizeof(statusCopy) - 1); statusCopy[sizeof(statusCopy) - 1] = 0;
   UNLOCK();
 
+  esp_netif_ip_info_t myIp;
+  uint32_t myIpAddr = 0;
+  if (staNetif && esp_netif_get_ip_info(staNetif, &myIp) == ESP_OK) {
+    myIpAddr = myIp.ip.addr;
+  }
+
+  int lanCount = 0, wifiCount = 0;
+  for (int i = 0; i < nc; i++) {
+    if (snap[i].ip == myIpAddr || snap[i].ip == 0x0100007F) continue;
+    if (strcmp(snap[i].conn, "LAN") == 0) lanCount++;
+    else wifiCount++;
+  }
+
   httpd_resp_set_type(req, "application/json");
   httpd_resp_set_hdr(req, "Cache-Control", "no-store");
   setSecurityHeaders(req);
@@ -1566,13 +1631,19 @@ static esp_err_t handleStats(httpd_req_t* req) {
 
   sendf(req, buf2, sizeof(buf2),
     "{\"ip\":\"%s\",\"blocked\":%lu,\"allowed\":%lu,\"domains\":%lu,\"rssi\":%d,\"temp\":-999.0,\"heap\":%lu,"
+    "\"min_heap\":%lu,\"cpu_mhz\":240,\"cores\":2,\"core0\":\"DNS Engine (UDP :53)\",\"core1\":\"Web Server & Maintenance\","
+    "\"lan_count\":%d,\"wifi_count\":%d,"
     "\"uptime\":\"%lud %luh %lum\",\"upurl\":\"%s\",\"upiv\":%lu,\"upstat\":\"%s\",\"rebind\":%lu,\"ratelimited\":%lu,\"clients\":[",
     ipbuf, (unsigned long)tb, (unsigned long)ta, (unsigned long)nh, getRSSI(),
-    (unsigned long)esp_get_free_heap_size(), (unsigned long)(up/86400), (unsigned long)((up%86400)/3600), (unsigned long)((up%3600)/60),
+    (unsigned long)esp_get_free_heap_size(), (unsigned long)esp_get_minimum_free_heap_size(),
+    lanCount, wifiCount,
+    (unsigned long)(up/86400), (unsigned long)((up%86400)/3600), (unsigned long)((up%3600)/60),
     esc1, (unsigned long)iv, esc2, (unsigned long)trb, (unsigned long)trl);
 
   uint64_t nowMs = millis64();
+  bool firstClient = true;
   for (int i = 0; i < nc; i++) {
+    if (snap[i].ip == myIpAddr || snap[i].ip == 0x0100007F) continue;
     char ips[16];
     ipToStr(snap[i].ip, ips, sizeof(ips));
     char macBuf[20];
@@ -1584,11 +1655,13 @@ static esp_err_t handleStats(httpd_req_t* req) {
     }
     char escName[64];
     jescInto(escName, sizeof(escName), snap[i].name);
+    const char* cn = (snap[i].conn[0]) ? snap[i].conn : "WIFI";
     uint64_t lastSeenSec = (nowMs > snap[i].lastSeen) ? ((nowMs - snap[i].lastSeen) / 1000ULL) : 0;
-    sendf(req, buf2, sizeof(buf2), "%s{\"ip\":\"%s\",\"mac\":\"%s\",\"name\":\"%s\",\"blocked\":%lu,\"allowed\":%lu,\"banned\":%s,\"lastSeenSec\":%llu}",
-      i ? "," : "", ips, macBuf, escName,
+    sendf(req, buf2, sizeof(buf2), "%s{\"ip\":\"%s\",\"mac\":\"%s\",\"name\":\"%s\",\"conn\":\"%s\",\"blocked\":%lu,\"allowed\":%lu,\"banned\":%s,\"lastSeenSec\":%llu}",
+      firstClient ? "" : ",", ips, macBuf, escName, cn,
       (unsigned long)snap[i].blocked, (unsigned long)snap[i].allowed, snap[i].banned ? "true" : "false",
       (unsigned long long)lastSeenSec);
+    firstClient = false;
   }
 
   sendf(req, buf2, sizeof(buf2), "],\"custom\":[");
@@ -1711,13 +1784,25 @@ static esp_err_t handleSetName(httpd_req_t* req) {
   if (getQueryArg(req, "name", rawName, sizeof(rawName))) {
     urlDecode(decodedName, rawName, sizeof(decodedName));
   }
+  char rawConn[16] = "";
+  char connVal[8] = "";
+  if (getQueryArg(req, "conn", rawConn, sizeof(rawConn))) {
+    if (strcasecmp(rawConn, "LAN") == 0) strcpy(connVal, "LAN");
+    else if (strcasecmp(rawConn, "WIFI") == 0) strcpy(connVal, "WIFI");
+  }
 
   LOCK();
   // Update in active clients table
   for (int i = 0; i < numClients; i++) {
     if (clients[i].ip == ip) {
-      strncpy(clients[i].name, decodedName, sizeof(clients[i].name) - 1);
-      clients[i].name[sizeof(clients[i].name) - 1] = 0;
+      if (decodedName[0]) {
+        strncpy(clients[i].name, decodedName, sizeof(clients[i].name) - 1);
+        clients[i].name[sizeof(clients[i].name) - 1] = 0;
+      }
+      if (connVal[0]) {
+        strncpy(clients[i].conn, connVal, sizeof(clients[i].conn) - 1);
+        clients[i].conn[sizeof(clients[i].conn) - 1] = 0;
+      }
       break;
     }
   }
@@ -1726,18 +1811,26 @@ static esp_err_t handleSetName(httpd_req_t* req) {
   for (int i = 0; i < numDevNames; i++) {
     if (devNames[i].ip == ip) { found = i; break; }
   }
-  if (decodedName[0]) {
+  if (decodedName[0] || connVal[0]) {
     if (found >= 0) {
-      strncpy(devNames[found].name, decodedName, sizeof(devNames[0].name) - 1);
-      devNames[found].name[sizeof(devNames[0].name) - 1] = 0;
+      if (decodedName[0]) {
+        strncpy(devNames[found].name, decodedName, sizeof(devNames[0].name) - 1);
+        devNames[found].name[sizeof(devNames[0].name) - 1] = 0;
+      }
+      if (connVal[0]) {
+        strncpy(devNames[found].conn, connVal, sizeof(devNames[0].conn) - 1);
+        devNames[found].conn[sizeof(devNames[0].conn) - 1] = 0;
+      }
     } else if (numDevNames < MAX_DEV_NAMES) {
       devNames[numDevNames].ip = ip;
       strncpy(devNames[numDevNames].name, decodedName, sizeof(devNames[0].name) - 1);
       devNames[numDevNames].name[sizeof(devNames[0].name) - 1] = 0;
+      strncpy(devNames[numDevNames].conn, connVal[0] ? connVal : "WIFI", sizeof(devNames[0].conn) - 1);
+      devNames[numDevNames].conn[sizeof(devNames[0].conn) - 1] = 0;
       numDevNames++;
     }
   } else {
-    // Clear name if empty
+    // Clear name if empty and no conn change
     if (found >= 0) {
       for (int i = found; i < numDevNames - 1; i++) devNames[i] = devNames[i + 1];
       numDevNames--;

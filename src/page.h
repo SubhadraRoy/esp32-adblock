@@ -183,11 +183,11 @@ header{
 /* Bento Grid */
 .bento-grid{
   display:grid;
-  grid-template-columns:repeat(4,1fr);
+  grid-template-columns:repeat(3,1fr);
   gap:16px;
   margin-bottom:24px;
 }
-@media(max-width:1024px){.bento-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:960px){.bento-grid{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:600px){.bento-grid{grid-template-columns:1fr}}
 
 .bento-card{
@@ -204,9 +204,24 @@ header{
 }
 .bento-card:hover{border-color:rgba(255,255,255,0.16)}
 .bento-card.col-2{grid-column:span 2}
-.bento-card.col-4{grid-column:span 4}
-@media(max-width:1024px){.bento-card.col-2,.bento-card.col-4{grid-column:span 2}}
-@media(max-width:600px){.bento-card.col-2,.bento-card.col-4{grid-column:span 1}}
+.bento-card.col-3{grid-column:span 3}
+@media(max-width:960px){.bento-card.col-2,.bento-card.col-3{grid-column:span 2}}
+@media(max-width:600px){.bento-card.col-2,.bento-card.col-3{grid-column:span 1}}
+
+.conn-chip{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:600;letter-spacing:.02em}
+.conn-chip.lan{background:rgba(14,165,233,0.12);color:var(--cyan);border:1px solid rgba(14,165,233,0.25)}
+.conn-chip.wifi{background:rgba(16,185,129,0.12);color:var(--emerald);border:1px solid rgba(16,185,129,0.25)}
+.conn-chip svg{width:12px;height:12px}
+
+.core-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:14px}
+@media(max-width:768px){.core-grid{grid-template-columns:1fr}}
+.core-box{background:var(--surface-subtle);border:1px solid var(--border);border-radius:var(--radius);padding:16px}
+.core-box.core0{border-left:3px solid var(--cyan)}
+.core-box.core1{border-left:3px solid var(--purple)}
+.core-title{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.core-badge{font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:4px;letter-spacing:.04em}
+.core-badge.c0{background:rgba(14,165,233,0.15);color:var(--cyan);border:1px solid rgba(14,165,233,0.3)}
+.core-badge.c1{background:rgba(139,92,246,0.15);color:var(--purple);border:1px solid rgba(139,92,246,0.3)}
 
 .bento-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
 .bento-title{font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text-dim);display:flex;align-items:center;gap:6px}
@@ -611,6 +626,14 @@ tbody tr:last-child td{border-bottom:none}
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
         <span class="mono" id="chipUptime">0d 0h 0m</span>
       </div>
+      <div class="meta-chip" title="Wi-Fi Signal Strength (RSSI)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
+        <span class="mono emerald" id="chipRssi">-0 dBm</span>
+      </div>
+      <div class="meta-chip" title="Free Internal DRAM Memory">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>
+        <span class="mono cyan" id="chipHeap">0 KB free</span>
+      </div>
       <div class="meta-chip" id="authBtn" onclick="openTokenModal()" title="Admin security token authentication">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
         <span id="authLabel">Auth Token</span>
@@ -651,10 +674,10 @@ tbody tr:last-child td{border-bottom:none}
   <!-- TAB 1: OVERVIEW -->
   <div class="tab-pane active" id="tab-overview">
     
-    <!-- Bento Metric Cards -->
+    <!-- Bento Metric Cards (6-KPI Unified Grid) -->
     <div class="bento-grid">
       
-      <!-- Card: Blocked Queries -->
+      <!-- Card 1: Blocked Queries -->
       <div class="bento-card">
         <div class="bento-header">
           <span class="bento-title">Ads Sinkholed</span>
@@ -672,7 +695,7 @@ tbody tr:last-child td{border-bottom:none}
         </div>
       </div>
 
-      <!-- Card: Allowed Queries -->
+      <!-- Card 2: Allowed Queries -->
       <div class="bento-card">
         <div class="bento-header">
           <span class="bento-title">Clean Traffic Passed</span>
@@ -689,24 +712,7 @@ tbody tr:last-child td{border-bottom:none}
         </div>
       </div>
 
-      <!-- Card: Active LAN Clients -->
-      <div class="bento-card">
-        <div class="bento-header">
-          <span class="bento-title">Active LAN Clients</span>
-          <div class="bento-icon" style="color:var(--cyan);border-color:rgba(14,165,233,0.3)">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-          </div>
-        </div>
-        <div class="bento-value cyan mono" id="kpiClients">0</div>
-        <div class="bento-sub">
-          <span>Online in last 15 min</span>
-        </div>
-        <div class="progress-track">
-          <div class="progress-fill cyan" style="width:100%"></div>
-        </div>
-      </div>
-
-      <!-- Card: Flash Rules -->
+      <!-- Card 3: Flash Rules -->
       <div class="bento-card">
         <div class="bento-header">
           <span class="bento-title">Rules in Flash</span>
@@ -720,6 +726,55 @@ tbody tr:last-child td{border-bottom:none}
         </div>
         <div class="progress-track">
           <div class="progress-fill" style="background:var(--purple);width:100%"></div>
+        </div>
+      </div>
+
+      <!-- Card 4: Connected Devices -->
+      <div class="bento-card">
+        <div class="bento-header">
+          <span class="bento-title">Connected Devices</span>
+          <div class="bento-icon" style="color:var(--cyan);border-color:rgba(14,165,233,0.3)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          </div>
+        </div>
+        <div class="bento-value cyan mono" id="kpiClients">0</div>
+        <div class="bento-sub">
+          <span id="kpiDevSplit">1 Wired LAN &bull; 0 Wireless (Wi-Fi)</span>
+        </div>
+        <div class="progress-track">
+          <div class="progress-fill cyan" style="width:100%"></div>
+        </div>
+      </div>
+
+      <!-- Card 5: Wi-Fi Signal Strength -->
+      <div class="bento-card">
+        <div class="bento-header">
+          <span class="bento-title">Wi-Fi Signal (2.4 GHz)</span>
+          <span class="mono emerald" id="wifiRssiTxt" style="font-size:12px;font-weight:700">-0 dBm</span>
+        </div>
+        <div class="bento-value emerald mono" id="kpiRssi">-0 dBm</div>
+        <div class="bento-sub">
+          <span id="kpiWifiQuality">Signal Quality: 0%</span>
+          <span class="dim">&bull; 17 dBm TX</span>
+        </div>
+        <div class="progress-track">
+          <div class="progress-fill emerald" id="wifiRssiBar" style="width:0%"></div>
+        </div>
+      </div>
+
+      <!-- Card 6: Free DRAM & System Uptime -->
+      <div class="bento-card">
+        <div class="bento-header">
+          <span class="bento-title">Free DRAM &amp; Uptime</span>
+          <span class="mono cyan" id="heapTxt" style="font-size:12px;font-weight:700">0 KB free</span>
+        </div>
+        <div class="bento-value cyan mono" id="kpiHeap">0 KB free</div>
+        <div class="bento-sub">
+          <span id="kpiUptime">Uptime: 0d 0h 0m</span>
+          <span class="dim">&bull; 240 MHz Dual-Core</span>
+        </div>
+        <div class="progress-track">
+          <div class="progress-fill cyan" id="heapBar" style="width:0%"></div>
         </div>
       </div>
 
@@ -798,35 +853,6 @@ tbody tr:last-child td{border-bottom:none}
       <div class="pulse-chart" id="pulseChart"></div>
     </div>
 
-    <!-- Hardware Health Bento Bar -->
-    <div class="bento-grid">
-      <div class="bento-card col-2">
-        <div class="bento-header">
-          <span class="bento-title">ESP32 Heap Memory (DRAM)</span>
-          <span class="mono cyan" id="heapTxt">0 KB free</span>
-        </div>
-        <div class="progress-track" style="height:8px">
-          <div class="progress-fill cyan" id="heapBar" style="width:40%"></div>
-        </div>
-        <div class="bento-sub" style="margin-top:8px">
-          <span>Zero fragmentation architecture &bull; 115 KB free contiguous DRAM headroom</span>
-        </div>
-      </div>
-
-      <div class="bento-card col-2">
-        <div class="bento-header">
-          <span class="bento-title">Wi-Fi Signal (2.4 GHz)</span>
-          <span class="mono emerald" id="wifiRssiTxt">-0 dBm</span>
-        </div>
-        <div class="progress-track" style="height:8px">
-          <div class="progress-fill emerald" id="wifiRssiBar" style="width:75%"></div>
-        </div>
-        <div class="bento-sub" style="margin-top:8px">
-          <span>TX Power capped at 17 dBm &bull; Thermal throttling prevented</span>
-        </div>
-      </div>
-    </div>
-
   </div>
 
   <!-- TAB 2: CLIENTS -->
@@ -856,6 +882,7 @@ tbody tr:last-child td{border-bottom:none}
           <thead>
             <tr>
               <th>Device Name</th>
+              <th>Connection</th>
               <th>Client IP</th>
               <th>Physical MAC</th>
               <th>Blocked</th>
@@ -865,7 +892,7 @@ tbody tr:last-child td{border-bottom:none}
             </tr>
           </thead>
           <tbody id="clientRows">
-            <tr><td colspan="7" class="dim" style="text-align:center;padding:24px">Discovering network clients...</td></tr>
+            <tr><td colspan="8" class="dim" style="text-align:center;padding:24px">Discovering network clients...</td></tr>
           </tbody>
         </table>
       </div>
@@ -886,6 +913,7 @@ tbody tr:last-child td{border-bottom:none}
           <thead>
             <tr>
               <th>Device Name</th>
+              <th>Connection</th>
               <th>Client IP</th>
               <th>Physical MAC</th>
               <th>Last Active</th>
@@ -895,7 +923,7 @@ tbody tr:last-child td{border-bottom:none}
             </tr>
           </thead>
           <tbody id="offlineRows">
-            <tr><td colspan="7" class="dim" style="text-align:center;padding:24px">No offline devices recorded</td></tr>
+            <tr><td colspan="8" class="dim" style="text-align:center;padding:24px">No offline devices recorded</td></tr>
           </tbody>
         </table>
       </div>
@@ -1070,6 +1098,53 @@ tbody tr:last-child td{border-bottom:none}
       </div>
     </div>
 
+    <!-- Dual-Core Multiprocessing (AMP) Architecture Visualizer -->
+    <div class="table-card" style="padding:20px;margin-bottom:24px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+        <div>
+          <div style="font-size:14px;font-weight:700;display:flex;align-items:center;gap:8px">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;color:var(--cyan)"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
+            <span>Dual-Core Xtensa LX6 Multiprocessing (AMP) Architecture</span>
+          </div>
+          <div class="dim" style="font-size:11.5px">240 MHz Symmetric Hardware Cores partitioned into Asymmetric Dedicated Processing Domains</div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <span class="core-badge c0">PRO CPU: Core 0</span>
+          <span class="core-badge c1">APP CPU: Core 1</span>
+        </div>
+      </div>
+
+      <div class="core-grid">
+        <div class="core-box core0">
+          <div class="core-title">
+            <strong class="cyan" style="font-size:13px">Core 0 &bull; Network &amp; Protocol Engine</strong>
+            <span class="core-badge c0">240 MHz &bull; Priority 10</span>
+          </div>
+          <table style="font-size:11.5px;width:100%">
+            <tr><td class="dim">Primary Duty</td><td class="mono emerald">DNS Engine (UDP :53 Sinkhole)</td></tr>
+            <tr><td class="dim">RF Subsystem</td><td class="mono">Wi-Fi 802.11 b/g/n PHY/MAC (Pri 23)</td></tr>
+            <tr><td class="dim">TCP/IP Stack</td><td class="mono">LwIP Core Locking (Zero Latency)</td></tr>
+            <tr><td class="dim">In-Memory Index</td><td class="mono cyan">MSB Prefix Table (1,028 B RAM)</td></tr>
+            <tr><td class="dim">Latency Performance</td><td class="mono emerald">&lt; 0.4 ms Local Sinkhole Response</td></tr>
+          </table>
+        </div>
+
+        <div class="core-box core1">
+          <div class="core-title">
+            <strong class="purple" style="font-size:13px">Core 1 &bull; Application &amp; Storage Engine</strong>
+            <span class="core-badge c1">240 MHz &bull; Priority 5</span>
+          </div>
+          <table style="font-size:11.5px;width:100%">
+            <tr><td class="dim">Web Server</td><td class="mono cyan">esp_http_server (Pinned Core 1)</td></tr>
+            <tr><td class="dim">Flash Filesystem</td><td class="mono">LittleFS 2.625 MB (SPI @ 80 MHz)</td></tr>
+            <tr><td class="dim">Maintenance &amp; OTA</td><td class="mono">TLS 1.3 Handshake Task (Pri 1)</td></tr>
+            <tr><td class="dim">Crypto Hardware</td><td class="mono purple">Hardware SHA-256 / AES / TRNG</td></tr>
+            <tr><td class="dim">DRAM Headroom</td><td class="mono emerald"><span id="minHeapVal">--</span> KB Min Heap Watermark</td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+
     <!-- Hardware Specifications -->
     <div class="bento-grid">
       <div class="bento-card col-2">
@@ -1114,16 +1189,29 @@ tbody tr:last-child td{border-bottom:none}
       <button class="modal-close" onclick="closeNameModal()">&times;</button>
     </div>
     <div class="modal-body">
-      <div class="dim" style="font-size:11.5px;margin-bottom:6px">Assign a friendly alias for device IP:</div>
+      <div class="dim" style="font-size:11.5px;margin-bottom:6px">Assign a friendly alias and connection type for device:</div>
       <div class="mono cyan" id="nameModalSub" style="font-size:14px;font-weight:700;margin-bottom:14px">192.168.0.x</div>
       <div class="form-group">
         <label class="form-label">Friendly Device Alias</label>
-        <input class="form-input" id="nameModalInput" placeholder="e.g. Living Room TV, Work Laptop" maxlength="31" onkeydown="if(event.key==='Enter')saveDeviceName()">
+        <input class="form-input" id="nameModalInput" placeholder="e.g. Primary QA Rig, Living Room TV" maxlength="31" onkeydown="if(event.key==='Enter')saveDeviceName()">
+      </div>
+      <div class="form-group" style="margin-top:12px">
+        <label class="form-label">Connection Interface</label>
+        <div style="display:flex;gap:18px;margin-top:4px">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12.5px">
+            <input type="radio" name="connType" id="connWifi" value="WIFI" checked>
+            <span>Wireless (Wi-Fi)</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12.5px">
+            <input type="radio" name="connType" id="connLan" value="LAN">
+            <span>Wired Ethernet (LAN)</span>
+          </label>
+        </div>
       </div>
     </div>
     <div class="modal-ftr">
       <button class="btn" onclick="clearDeviceName()">Clear Alias</button>
-      <button class="btn primary" onclick="saveDeviceName()">Save Alias</button>
+      <button class="btn primary" onclick="saveDeviceName()">Save Details</button>
     </div>
   </div>
 </div>
@@ -1357,6 +1445,9 @@ function loadData() {
 function renderStats(d) {
   $('chipIp').textContent = d.ip || '192.168.0.x';
   $('chipUptime').textContent = d.uptime || '0d 0h 0m';
+  if ($('chipRssi')) $('chipRssi').textContent = (d.rssi || 0) + ' dBm';
+  var freeKb = Math.round((d.heap || 0) / 1024);
+  if ($('chipHeap')) $('chipHeap').textContent = freeKb + ' KB free';
 
   $('kpiBlocked').textContent = (d.blocked || 0).toLocaleString();
   $('kpiAllowed').textContent = (d.allowed || 0).toLocaleString();
@@ -1373,15 +1464,24 @@ function renderStats(d) {
   $('navClientCount').textContent = clients.length;
   $('navRuleCount').textContent = (d.custom || []).length;
 
-  var freeKb = Math.round((d.heap || 0) / 1024);
-  $('heapTxt').textContent = freeKb + ' KB free';
-  var heapPct = Math.min(100, Math.round((d.heap / 327680) * 100));
-  $('heapBar').style.width = heapPct + '%';
+  var lanCnt = d.lan_count !== undefined ? d.lan_count : (online.filter(function(c){ return c.conn === 'LAN'; }).length || 1);
+  var wifiCnt = d.wifi_count !== undefined ? d.wifi_count : (online.filter(function(c){ return c.conn !== 'LAN'; }).length);
+  if ($('kpiDevSplit')) $('kpiDevSplit').textContent = lanCnt + ' Wired LAN \u2022 ' + wifiCnt + ' Wireless (Wi-Fi)';
 
   var rssi = d.rssi || -60;
-  $('wifiRssiTxt').textContent = rssi + ' dBm';
   var rssiPct = Math.max(10, Math.min(100, Math.round((rssi + 100) * 1.66)));
-  $('wifiRssiBar').style.width = rssiPct + '%';
+  if ($('kpiRssi')) $('kpiRssi').textContent = rssi + ' dBm';
+  if ($('wifiRssiTxt')) $('wifiRssiTxt').textContent = rssi + ' dBm';
+  if ($('wifiRssiBar')) $('wifiRssiBar').style.width = rssiPct + '%';
+  if ($('kpiWifiQuality')) $('kpiWifiQuality').textContent = 'Signal Quality: ' + rssiPct + '%';
+
+  var heapPct = Math.min(100, Math.round((d.heap / 327680) * 100));
+  if ($('kpiHeap')) $('kpiHeap').textContent = freeKb + ' KB free';
+  if ($('heapTxt')) $('heapTxt').textContent = freeKb + ' KB free';
+  if ($('heapBar')) $('heapBar').style.width = heapPct + '%';
+  if ($('kpiUptime')) $('kpiUptime').textContent = 'Uptime: ' + (d.uptime || '0d 0h 0m');
+
+  if ($('minHeapVal')) $('minHeapVal').textContent = Math.round((d.min_heap || d.heap || 0) / 1024);
 
   if (d.upurl && !$('updateUrlInput').matches(':focus')) $('updateUrlInput').value = d.upurl;
   if (d.upiv && !$('updateIntervalInput').matches(':focus')) $('updateIntervalInput').value = d.upiv;
@@ -1406,6 +1506,7 @@ function renderClients() {
     var ip = c.ip || '';
     var mac = c.mac || '--:--:--:--:--:--';
     var name = c.name || '';
+    var conn = c.conn || 'WIFI';
     var match = !q || ip.toLowerCase().includes(q) || mac.toLowerCase().includes(q) || name.toLowerCase().includes(q);
     if (!match) return;
 
@@ -1413,9 +1514,13 @@ function renderClients() {
     var tot = (c.blocked || 0) + (c.allowed || 0);
     var pct = tot > 0 ? Math.round((c.blocked / tot) * 100) : 0;
 
+    var connBadge = (conn === 'LAN') ?
+      '<span class="conn-chip lan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg> Wired LAN</span>' :
+      '<span class="conn-chip wifi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg> Wi-Fi</span>';
+
     var nameHtml = '<div class="dev-cell">' +
       '<span class="dev-name">' + (escapeHtml(name) || '<span class="dim">Unnamed Device</span>') + '</span>' +
-      '<button class="edit-btn" onclick="openEditNameModal(\'' + ip + '\',\'' + escapeAttr(name) + '\')" title="Edit device alias">' +
+      '<button class="edit-btn" onclick="openEditNameModal(\'' + ip + '\',\'' + escapeAttr(name) + '\',\'' + conn + '\')" title="Edit device alias &amp; interface">' +
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>' +
       '</button></div>';
 
@@ -1428,6 +1533,7 @@ function renderClients() {
         (c.banned ? 'Unban' : 'Ban') + '</button>';
       activeHtml += '<tr>' +
         '<td>' + nameHtml + '</td>' +
+        '<td>' + connBadge + '</td>' +
         '<td>' + ipMacHtml + '</td>' +
         '<td>' + macChipHtml + '</td>' +
         '<td class="mono crimson">' + (c.blocked || 0) + '</td>' +
@@ -1445,6 +1551,7 @@ function renderClients() {
         '</button></div>';
       offlineHtml += '<tr>' +
         '<td>' + nameHtml + '</td>' +
+        '<td>' + connBadge + '</td>' +
         '<td>' + ipMacHtml + '</td>' +
         '<td>' + macChipHtml + '</td>' +
         '<td><span class="status-badge offline">' + agoTxt + '</span></td>' +
@@ -1458,8 +1565,8 @@ function renderClients() {
   $('onlineBadge').textContent = activeCount;
   $('offlineBadge').textContent = offlineCount;
 
-  activeRows.innerHTML = activeHtml || '<tr><td colspan="7" class="dim" style="text-align:center;padding:24px">No active devices found</td></tr>';
-  offlineRows.innerHTML = offlineHtml || '<tr><td colspan="7" class="dim" style="text-align:center;padding:24px">No offline devices recorded</td></tr>';
+  activeRows.innerHTML = activeHtml || '<tr><td colspan="8" class="dim" style="text-align:center;padding:24px">No active devices found</td></tr>';
+  offlineRows.innerHTML = offlineHtml || '<tr><td colspan="8" class="dim" style="text-align:center;padding:24px">No offline devices recorded</td></tr>';
 }
 
 function formatAgo(sec) {
@@ -1473,10 +1580,14 @@ function formatAgo(sec) {
 }
 
 // Device Rename Modal Handlers
-function openEditNameModal(ip, currentName) {
+function openEditNameModal(ip, currentName, currentConn) {
   targetEditIp = ip;
   $('nameModalSub').textContent = ip;
   $('nameModalInput').value = currentName || '';
+  if ($('connLan') && $('connWifi')) {
+    if (currentConn === 'LAN') $('connLan').checked = true;
+    else $('connWifi').checked = true;
+  }
   $('nameModal').classList.add('open');
   setTimeout(function(){ $('nameModalInput').focus(); }, 100);
 }
@@ -1485,13 +1596,15 @@ function closeNameModal() { $('nameModal').classList.remove('open'); targetEditI
 function saveDeviceName() {
   if (!targetEditIp) return;
   var name = $('nameModalInput').value.trim();
-  postAuth('/setname?ip=' + encodeURIComponent(targetEditIp) + '&name=' + encodeURIComponent(name))
+  var connRadio = document.querySelector('input[name="connType"]:checked');
+  var conn = connRadio ? connRadio.value : 'WIFI';
+  postAuth('/setname?ip=' + encodeURIComponent(targetEditIp) + '&name=' + encodeURIComponent(name) + '&conn=' + encodeURIComponent(conn))
     .then(function(){
-      notify('Device alias updated');
+      notify('Device details updated');
       closeNameModal();
       loadData();
     })
-    .catch(function(e){ notify('Failed to save alias: ' + e.message, true); });
+    .catch(function(e){ notify('Failed to save details: ' + e.message, true); });
 }
 
 function clearDeviceName() {
@@ -1682,10 +1795,11 @@ function renderLogs() {
 // CSV Exporters
 function exportClientsCSV() {
   if (!lastStats || !lastStats.clients) return;
-  var rows = [['Name','IP','MAC','Blocked','Allowed','Status','LastSeenSec']];
+  var rows = [['Name','Connection','IP','MAC','Blocked','Allowed','Status','LastSeenSec']];
   lastStats.clients.forEach(function(c){
     rows.push([
       c.name || '',
+      c.conn || 'WIFI',
       c.ip || '',
       c.mac || '',
       c.blocked || 0,
