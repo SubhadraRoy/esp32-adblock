@@ -109,11 +109,13 @@ static int dnsSock = -1, upstreamSock = -1;
 static struct sockaddr_in upstreamAddr;
 static FILE* blocklist = nullptr;
 static uint32_t numHashes = 0, totalBlocked = 0, totalAllowed = 0;
+static uint32_t totalRebindBlocked = 0, totalRateLimited = 0;
 
 struct BlockLogEntry {
   uint32_t epoch;
   uint32_t clientIp;
   uint16_t qtype;
+  bool isRebind;
   char domain[96];
 };
 static const int MAX_BLOCK_LOG = 64;
@@ -129,6 +131,8 @@ struct Dev {
   uint32_t allowed;
   uint64_t lastSeen;
   bool banned;
+  uint32_t secWindow;
+  uint16_t qCount;
 };
 static const int MAX_CLIENTS = 96;
 static Dev clients[MAX_CLIENTS];
@@ -603,6 +607,8 @@ static Dev* getClient(uint32_t ip) { // caller holds stateMutex
     c->blocked = c->allowed = 0;
     c->lastSeen = now;
     c->banned = isBannedIP(ip);
+    c->secWindow = 0;
+    c->qCount = 0;
     c->name[0] = 0;
     for (int j = 0; j < numDevNames; j++) {
       if (devNames[j].ip == ip) {
@@ -624,6 +630,8 @@ static Dev* getClient(uint32_t ip) { // caller holds stateMutex
   c->blocked = c->allowed = 0;
   c->lastSeen = now;
   c->banned = isBannedIP(ip);
+  c->secWindow = 0;
+  c->qCount = 0;
   c->name[0] = 0;
   for (int j = 0; j < numDevNames; j++) {
     if (devNames[j].ip == ip) {
@@ -726,6 +734,9 @@ struct DnsTx {
   uint64_t expireMs;
   uint8_t qsection[256];
   int qlen;
+  char domain[96];
+  uint16_t qtype;
+  bool hasOpt;
   bool inUse;
 };
 
@@ -733,6 +744,80 @@ static const int MAX_TX = 32;
 static DnsTx txTable[MAX_TX];
 static uint8_t dnsRxBuf[1472];
 static uint8_t upRxBuf[1472];
+
+// RFC 1035 Refused (RCODE=5) response for client query rate limiting
+static int buildRefused(const uint8_t* inPkt, int inLen, uint8_t* outPkt) {
+  if (inLen < 12) return 0;
+  memcpy(outPkt, inPkt, 12);
+  outPkt[2] = 0x81; // QR=1, RD=1
+  outPkt[3] = 0x85; // RA=1, RCODE=5 (REFUSED)
+  outPkt[4] = 0; outPkt[5] = 0; // QDCOUNT=0
+  outPkt[6] = 0; outPkt[7] = 0; // ANCOUNT=0
+  outPkt[8] = 0; outPkt[9] = 0; // NSCOUNT=0
+  outPkt[10] = 0; outPkt[11] = 0; // ARCOUNT=0
+  return 12;
+}
+
+// RFC 1918 / Loopback / Link-Local IP filtering for DNS Rebinding Protection
+static inline bool isPrivateOrLoopbackIP(uint8_t b0, uint8_t b1) {
+  if (b0 == 127) return true;                            // 127.0.0.0/8 Loopback
+  if (b0 == 10) return true;                             // 10.0.0.0/8 RFC 1918 Class A
+  if (b0 == 172 && (b1 >= 16 && b1 <= 31)) return true; // 172.16.0.0/12 RFC 1918 Class B
+  if (b0 == 192 && b1 == 168) return true;               // 192.168.0.0/16 RFC 1918 Class C
+  if (b0 == 169 && b1 == 254) return true;               // 169.254.0.0/16 Link-Local / APIPA
+  if (b0 == 0) return true;                              // 0.0.0.0/8
+  return false;
+}
+
+static bool isRebindThreat(const uint8_t* pkt, int len, int qend, const char* domain) {
+  if (!domain || !pkt || len < 12) return false;
+
+  // Preserve legitimate local and internal network domain resolution
+  size_t dlen = strlen(domain);
+  if (dlen >= 6 && strcmp(domain + dlen - 6, ".local") == 0) return false;
+  if (dlen >= 4 && strcmp(domain + dlen - 4, ".lan") == 0) return false;
+  if (dlen >= 5 && strcmp(domain + dlen - 5, ".home") == 0) return false;
+  if (dlen >= 10 && strcmp(domain + dlen - 10, ".home.arpa") == 0) return false;
+  if (dlen >= 9 && strcmp(domain + dlen - 9, ".internal") == 0) return false;
+  if (dlen >= 12 && strcmp(domain + dlen - 12, ".localdomain") == 0) return false;
+
+  uint16_t ancount = (pkt[6] << 8) | pkt[7];
+  if (ancount == 0) return false;
+
+  int p = qend; // Point immediately after Question section
+  for (int a = 0; a < ancount && p + 10 <= len; a++) {
+    // Parse NAME (label sequence or compression pointer)
+    if ((pkt[p] & 0xC0) == 0xC0) {
+      p += 2;
+    } else {
+      while (p < len && pkt[p] != 0) {
+        if ((pkt[p] & 0xC0) == 0xC0) { p += 2; goto after_name; }
+        p += 1 + pkt[p];
+      }
+      if (p < len && pkt[p] == 0) p++;
+    }
+after_name:
+    if (p + 10 > len) break;
+    uint16_t type = (pkt[p] << 8) | pkt[p + 1];
+    uint16_t rdlen = (pkt[p + 8] << 8) | pkt[p + 9];
+    p += 10;
+    if (p + rdlen > len) break;
+
+    if (type == 1 && rdlen == 4) { // Type A (IPv4)
+      uint8_t b0 = pkt[p], b1 = pkt[p + 1];
+      printf("[rebind-ip] dom=%s ip=%u.%u.%u.%u priv=%d\n", domain, b0, b1, pkt[p+2], pkt[p+3], isPrivateOrLoopbackIP(b0, b1));
+      if (isPrivateOrLoopbackIP(b0, b1)) return true;
+    } else if (type == 28 && rdlen == 16) { // Type AAAA (IPv6)
+      if ((pkt[p] & 0xFE) == 0xFC) return true; // fc00::/7 Unique Local
+      if (pkt[p] == 0xFE && (pkt[p + 1] & 0xC0) == 0x80) return true; // fe80::/10 Link-Local
+      bool allZero = true;
+      for (int k = 0; k < 15; k++) { if (pkt[p + k] != 0) { allZero = false; break; } }
+      if (allZero && pkt[p + 15] == 1) return true; // ::1 Loopback
+    }
+    p += rdlen;
+  }
+  return false;
+}
 
 static const char* qtypeToStr(uint16_t qt) {
   switch (qt) {
@@ -749,7 +834,7 @@ static const char* qtypeToStr(uint16_t qt) {
   }
 }
 
-static void logBlocked(uint32_t clientIp, const char* domain, uint16_t qtype) { // caller holds stateMutex
+static void logBlocked(uint32_t clientIp, const char* domain, uint16_t qtype, bool isRebind = false) { // caller holds stateMutex
   time_t now = time(NULL);
   int idx;
   if (blockLogCount < MAX_BLOCK_LOG) {
@@ -762,6 +847,7 @@ static void logBlocked(uint32_t clientIp, const char* domain, uint16_t qtype) { 
   blockLog[idx].epoch = (uint32_t)now;
   blockLog[idx].clientIp = clientIp;
   blockLog[idx].qtype = qtype;
+  blockLog[idx].isRebind = isRebind;
   strncpy(blockLog[idx].domain, (domain && domain[0]) ? domain : "banned_client", sizeof(blockLog[idx].domain) - 1);
   blockLog[idx].domain[sizeof(blockLog[idx].domain) - 1] = 0;
 }
@@ -792,6 +878,8 @@ static void dnsTask(void*) {
       struct sockaddr_in cli;
       socklen_t cliLen = sizeof(cli);
       int qlen = recvfrom(dnsSock, dnsRxBuf, sizeof(dnsRxBuf), 0, (struct sockaddr*)&cli, &cliLen);
+      printf("[dns-recv] qlen=%d cli=%s\n", qlen, inet_ntoa(cli.sin_addr));
+      fflush(stdout);
 
       if (qlen >= 12) {
         // Drop responses or non-standard opcodes immediately to prevent reflection loops
@@ -814,11 +902,33 @@ static void dnsTask(void*) {
           } else {
             LOCK();
             Dev* c = getClient((uint32_t)cli.sin_addr.s_addr);
+
+            // Per-client query rate limiting (anti-flood / anti-amplification storm)
+            uint32_t curSec = (uint32_t)(millis64() / 1000ULL);
+            if (c->secWindow == curSec) {
+              c->qCount++;
+            } else {
+              c->secWindow = curSec;
+              c->qCount = 1;
+            }
+            if (c->qCount > 100) { // >100 queries/second threshold
+              totalRateLimited++;
+              UNLOCK();
+              uint8_t refBuf[16];
+              int refLen = buildRefused(dnsRxBuf, qlen, refBuf);
+              if (refLen > 0) {
+                sendto(dnsSock, refBuf, refLen, 0, (struct sockaddr*)&cli, cliLen);
+              }
+              continue;
+            }
+
             bool blocked = (c && c->banned) || (dl && isBlocked(domain));
+            printf("[dns-parse] dl=%u qt=%u dom=%s blk=%d\n", (unsigned)dl, (unsigned)qtype, domain, (int)blocked);
+            fflush(stdout);
             if (blocked) {
               totalBlocked++;
               if (c) c->blocked++;
-              logBlocked((uint32_t)cli.sin_addr.s_addr, domain, qtype);
+              logBlocked((uint32_t)cli.sin_addr.s_addr, domain, qtype, false);
             } else {
               totalAllowed++;
               if (c) c->allowed++;
@@ -858,7 +968,14 @@ static void dnsTask(void*) {
                 } else {
                   tx->qlen = 0;
                 }
+                strncpy(tx->domain, domain, sizeof(tx->domain) - 1);
+                tx->domain[sizeof(tx->domain) - 1] = 0;
+                tx->qtype = qtype;
+                tx->hasOpt = hasOpt;
                 tx->inUse = true;
+
+                printf("[dns-fwd] dom=%s upTxid=%04x slot=%d\n", domain, upTxid, slot);
+                fflush(stdout);
 
                 // Replace ID with randomized upstream TXID
                 dnsRxBuf[0] = (uint8_t)(upTxid >> 8);
@@ -873,6 +990,9 @@ static void dnsTask(void*) {
                 }
 
                 sendto(upstreamSock, dnsRxBuf, qlen, 0, (struct sockaddr*)&upstreamAddr, sizeof(upstreamAddr));
+              } else {
+                printf("[dns-fwd-err] no slots for %s\n", domain);
+                fflush(stdout);
               }
             }
           }
@@ -895,15 +1015,38 @@ static void dnsTask(void*) {
             break;
           }
         }
+        printf("[dns-rx-up] n=%d upTxid=%04x found=%d\n", n, upTxid, found);
+        fflush(stdout);
 
         if (found >= 0) {
           DnsTx* tx = &txTable[found];
           bool qMatch = (tx->qlen == 0 || (n >= 12 + tx->qlen && memcmp(upRxBuf + 12, tx->qsection, tx->qlen) == 0));
           if (qMatch) {
-            // Restore client transaction ID and forward
+            // Restore client transaction ID
             upRxBuf[0] = (uint8_t)(tx->clientTxid >> 8);
             upRxBuf[1] = (uint8_t)(tx->clientTxid & 0xFF);
-            sendto(dnsSock, upRxBuf, n, 0, (struct sockaddr*)&tx->clientAddr, tx->clientLen);
+
+            // DNS Rebinding Attack Protection:
+            // Intercept upstream answers containing RFC 1918 / loopback / link-local addresses
+            bool isReb = isRebindThreat(upRxBuf, n, 12 + tx->qlen, tx->domain);
+            printf("[dns-rebind-dbg] dom=%s n=%d qlen=%d isReb=%d\n", tx->domain, n, tx->qlen, (int)isReb);
+            if (isReb) {
+              LOCK();
+              totalBlocked++;
+              totalRebindBlocked++;
+              logBlocked((uint32_t)tx->clientAddr.sin_addr.s_addr, tx->domain, tx->qtype, true);
+              Dev* c = getClient((uint32_t)tx->clientAddr.sin_addr.s_addr);
+              if (c) c->blocked++;
+              UNLOCK();
+
+              // Sinkhole response with 0.0.0.0 (Type A) or NODATA (Type AAAA)
+              int rlen = buildBlocked(upRxBuf, 12 + tx->qlen, tx->qtype, tx->hasOpt);
+              if (rlen > 0) {
+                sendto(dnsSock, upRxBuf, rlen, 0, (struct sockaddr*)&tx->clientAddr, tx->clientLen);
+              }
+            } else {
+              sendto(dnsSock, upRxBuf, n, 0, (struct sockaddr*)&tx->clientAddr, tx->clientLen);
+            }
             tx->inUse = false;
           }
         }
@@ -1272,20 +1415,121 @@ static bool validateOrigin(httpd_req_t* req) {
   return true;
 }
 
+struct AuthFailRecord {
+  uint32_t ip;
+  uint32_t failures;
+  uint64_t lockedUntilMs;
+};
+static const int MAX_AUTH_FAIL_TRACK = 8;
+static AuthFailRecord authFailures[MAX_AUTH_FAIL_TRACK];
+
+static bool isIpLockedOut(uint32_t ip) {
+  uint64_t now = millis64();
+  for (int i = 0; i < MAX_AUTH_FAIL_TRACK; i++) {
+    if (authFailures[i].ip == ip) {
+      if (now < authFailures[i].lockedUntilMs) return true;
+      if (now >= authFailures[i].lockedUntilMs && authFailures[i].failures >= 5) {
+        authFailures[i].failures = 0;
+        authFailures[i].lockedUntilMs = 0;
+      }
+      return false;
+    }
+  }
+  return false;
+}
+
+static void recordAuthFailure(uint32_t ip) {
+  uint64_t now = millis64();
+  int found = -1, oldest = 0;
+  for (int i = 0; i < MAX_AUTH_FAIL_TRACK; i++) {
+    if (authFailures[i].ip == ip) { found = i; break; }
+    if (authFailures[i].ip == 0) { found = i; break; }
+    if (authFailures[i].lockedUntilMs < authFailures[oldest].lockedUntilMs) oldest = i;
+  }
+  int slot = (found >= 0) ? found : oldest;
+  if (authFailures[slot].ip != ip) {
+    authFailures[slot].ip = ip;
+    authFailures[slot].failures = 0;
+    authFailures[slot].lockedUntilMs = 0;
+  }
+  authFailures[slot].failures++;
+  if (authFailures[slot].failures >= 5) {
+    authFailures[slot].lockedUntilMs = now + 30000ULL; // 30-second lockout
+    printf("[auth] IP locked out for 30s after 5 bad token attempts\n");
+  }
+}
+
+static void recordAuthSuccess(uint32_t ip) {
+  for (int i = 0; i < MAX_AUTH_FAIL_TRACK; i++) {
+    if (authFailures[i].ip == ip) {
+      authFailures[i].failures = 0;
+      authFailures[i].lockedUntilMs = 0;
+      break;
+    }
+  }
+}
+
+static uint32_t getReqClientIp(httpd_req_t* req) {
+  int fd = httpd_req_to_sockfd(req);
+  if (fd < 0) return 0;
+  struct sockaddr_storage addr = {};
+  socklen_t len = sizeof(addr);
+  if (getpeername(fd, (struct sockaddr*)&addr, &len) == 0) {
+    if (addr.ss_family == AF_INET) {
+      struct sockaddr_in* s = (struct sockaddr_in*)&addr;
+      return (uint32_t)s->sin_addr.s_addr;
+    } else if (addr.ss_family == AF_INET6) {
+      struct sockaddr_in6* s6 = (struct sockaddr_in6*)&addr;
+      const uint8_t* b = (const uint8_t*)&s6->sin6_addr;
+      bool isMapped = true;
+      for (int k = 0; k < 10; k++) { if (b[k] != 0) { isMapped = false; break; } }
+      if (isMapped && b[10] == 0xFF && b[11] == 0xFF) {
+        uint32_t ip4 = 0;
+        memcpy(&ip4, b + 12, 4);
+        return ip4;
+      }
+      uint32_t fallback = 0;
+      memcpy(&fallback, b + 12, 4);
+      return fallback;
+    }
+  }
+  return 0;
+}
+
 static bool checkAuth(httpd_req_t* req) {
   if (!validateOrigin(req)) return false;
   if (constantTimeCompare(ADMIN_TOKEN, "changeme")) return false;
+
+  uint32_t clientIp = getReqClientIp(req);
+  if (clientIp && isIpLockedOut(clientIp)) return false;
+
   char tok[64] = "";
+  bool gotTok = false;
   if (httpd_req_get_hdr_value_str(req, "X-Admin-Token", tok, sizeof(tok)) == ESP_OK) {
-    if (constantTimeCompare(tok, ADMIN_TOKEN)) return true;
+    gotTok = true;
+  } else if (getQueryArg(req, "t", tok, sizeof(tok))) {
+    gotTok = true;
   }
-  if (getQueryArg(req, "t", tok, sizeof(tok))) {
-    return constantTimeCompare(tok, ADMIN_TOKEN);
+
+  if (gotTok && constantTimeCompare(tok, ADMIN_TOKEN)) {
+    if (clientIp) recordAuthSuccess(clientIp);
+    return true;
+  }
+
+  if (clientIp && gotTok) {
+    recordAuthFailure(clientIp);
   }
   return false;
 }
 
 static esp_err_t sendUnauthorized(httpd_req_t* req) {
+  uint32_t clientIp = getReqClientIp(req);
+  if (clientIp && isIpLockedOut(clientIp)) {
+    httpd_resp_set_status(req, "429 Too Many Requests");
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_send(req, "too many failed token attempts; 30s lockout", HTTPD_RESP_USE_STRLEN);
+    return ESP_FAIL;
+  }
   httpd_resp_set_type(req, "text/plain");
   httpd_resp_send_err(req, HTTPD_401_UNAUTHORIZED, "bad or missing token (default 'changeme' not allowed)");
   return ESP_FAIL;
@@ -1305,6 +1549,8 @@ static esp_err_t handleRoot(httpd_req_t* req) {
 }
 
 static esp_err_t handleStats(httpd_req_t* req) {
+  uint32_t clientIp = getReqClientIp(req);
+  if (clientIp && isIpLockedOut(clientIp)) return sendUnauthorized(req);
   bool auth = checkAuth(req);
   uint32_t up = millis() / 1000;
   char ipbuf[16];
@@ -1312,11 +1558,12 @@ static esp_err_t handleStats(httpd_req_t* req) {
 
   static Dev snap[MAX_CLIENTS];
   int nc, ncust;
-  uint32_t tb, ta, nh, iv;
+  uint32_t tb, ta, nh, iv, trb, trl;
   char urlCopy[256], statusCopy[128];
 
   LOCK();
   tb = totalBlocked; ta = totalAllowed; nh = numHashes; iv = updateIntervalH;
+  trb = totalRebindBlocked; trl = totalRateLimited;
   nc = numClients;
   memcpy(snap, clients, sizeof(Dev) * nc);
   ncust = numCustom;
@@ -1334,10 +1581,10 @@ static esp_err_t handleStats(httpd_req_t* req) {
 
   sendf(req, buf2, sizeof(buf2),
     "{\"ip\":\"%s\",\"blocked\":%lu,\"allowed\":%lu,\"domains\":%lu,\"rssi\":%d,\"temp\":-999.0,\"heap\":%lu,"
-    "\"uptime\":\"%lud %luh %lum\",\"upurl\":\"%s\",\"upiv\":%lu,\"upstat\":\"%s\",\"clients\":[",
+    "\"uptime\":\"%lud %luh %lum\",\"upurl\":\"%s\",\"upiv\":%lu,\"upstat\":\"%s\",\"rebind\":%lu,\"ratelimited\":%lu,\"clients\":[",
     ipbuf, (unsigned long)tb, (unsigned long)ta, (unsigned long)nh, getRSSI(),
     (unsigned long)esp_get_free_heap_size(), (unsigned long)(up/86400), (unsigned long)((up%86400)/3600), (unsigned long)((up%3600)/60),
-    esc1, (unsigned long)iv, esc2);
+    esc1, (unsigned long)iv, esc2, (unsigned long)trb, (unsigned long)trl);
 
   uint64_t nowMs = millis64();
   for (int i = 0; i < nc; i++) {
@@ -1437,8 +1684,9 @@ static esp_err_t handleLogJson(httpd_req_t* req) {
     jescInto(escDom, sizeof(escDom), e->domain);
     jescInto(escName, sizeof(escName), devName);
 
+    const char* actionStr = e->isRebind ? "REBIND_DEFENSE" : ((e->qtype == 1) ? "0.0.0.0" : "NODATA");
     sendf(req, buf, sizeof(buf),
-      "%s{\"time\":%lu,\"ip\":\"%s\",\"name\":\"%s\",\"mac\":\"%s\",\"domain\":\"%s\",\"type\":\"%s\",\"action\":\"%s\"}",
+      "%s{\"time\":%lu,\"ip\":\"%s\",\"name\":\"%s\",\"mac\":\"%s\",\"domain\":\"%s\",\"type\":\"%s\",\"action\":\"%s\",\"rebind\":%s}",
       i ? "," : "",
       (unsigned long)e->epoch,
       ipStr,
@@ -1446,7 +1694,8 @@ static esp_err_t handleLogJson(httpd_req_t* req) {
       macBuf,
       escDom,
       qtypeToStr(e->qtype),
-      (e->qtype == 1) ? "0.0.0.0" : "NODATA"
+      actionStr,
+      e->isRebind ? "true" : "false"
     );
   }
 

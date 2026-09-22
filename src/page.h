@@ -474,6 +474,23 @@ tbody tr:last-child td{border-bottom:none}
   transition:all .15s;
 }
 .preset-chip:hover{border-color:var(--cyan);color:var(--cyan);background:var(--cyan-bg)}
+.preset-chip.threat{border-color:rgba(244,63,94,0.3);color:var(--crimson);background:var(--crimson-bg)}
+.preset-chip.threat:hover{border-color:var(--crimson);background:rgba(244,63,94,0.22)}
+.preset-chip.security{border-color:rgba(139,92,246,0.3);color:var(--purple);background:var(--purple-bg)}
+.preset-chip.security:hover{border-color:var(--purple);background:rgba(139,92,246,0.22)}
+
+/* Security Hardening Center */
+.sec-shield-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px}
+@media(max-width:1024px){.sec-shield-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:600px){.sec-shield-grid{grid-template-columns:1fr}}
+.sec-shield-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;display:flex;align-items:center;gap:12px;position:relative;overflow:hidden}
+.sec-shield-icon{width:34px;height:34px;border-radius:var(--radius-sm);display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.sec-shield-icon.emerald{background:var(--emerald-bg);border:1px solid rgba(16,185,129,0.3);color:var(--emerald)}
+.sec-shield-icon.cyan{background:var(--cyan-bg);border:1px solid rgba(14,165,233,0.3);color:var(--cyan)}
+.sec-shield-icon.purple{background:var(--purple-bg);border:1px solid rgba(139,92,246,0.3);color:var(--purple)}
+.sec-shield-icon.amber{background:var(--amber-bg);border:1px solid rgba(245,158,11,0.3);color:var(--amber)}
+.sec-shield-title{font-size:12px;font-weight:700;color:var(--text);margin-bottom:2px}
+.sec-shield-status{font-size:11px;color:var(--text-muted);display:flex;align-items:center;gap:5px}
 
 /* Upload Box */
 .drop-zone{
@@ -708,6 +725,61 @@ tbody tr:last-child td{border-bottom:none}
 
     </div>
 
+    <!-- Security Hardening Center -->
+    <div class="sec-shield-grid">
+      <div class="sec-shield-card" title="RFC 1918 &amp; Loopback Anti-Rebinding Sinkhole">
+        <div class="sec-shield-icon emerald">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+        </div>
+        <div>
+          <div class="sec-shield-title">DNS Rebinding Shield</div>
+          <div class="sec-shield-status">
+            <span class="emerald" style="font-weight:700">&bull; ARMED</span>
+            <span class="dim">(<span id="secRebindCount" class="mono">0</span> intercepted)</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="sec-shield-card" title="Per-Client Query Velocity Limiter (Anti-Flood / Anti-Amplification)">
+        <div class="sec-shield-icon cyan">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+        </div>
+        <div>
+          <div class="sec-shield-title">Anti-Flood Limiter</div>
+          <div class="sec-shield-status">
+            <span class="cyan" style="font-weight:700">&bull; 100 QPS</span>
+            <span class="dim">(<span id="secRateCount" class="mono">0</span> throttled)</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="sec-shield-card" title="Progressive Lockout on Token Guessing &amp; Dictionary Attacks">
+        <div class="sec-shield-icon purple">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        </div>
+        <div>
+          <div class="sec-shield-title">Brute-Force Shield</div>
+          <div class="sec-shield-status">
+            <span class="purple" style="font-weight:700">&bull; 5-Strike Lockout</span>
+            <span class="dim">(30s Cooldown)</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="sec-shield-card" title="Multi-Tier Threat Intelligence &amp; Fake Shop Blocking Coverage">
+        <div class="sec-shield-icon amber">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        </div>
+        <div>
+          <div class="sec-shield-title">Threat Intel Feeds</div>
+          <div class="sec-shield-status">
+            <span class="amber" style="font-weight:700">&bull; Multi-Source</span>
+            <span class="dim">(Active)</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Live Throughput Pulse Graph -->
     <div class="table-card" style="padding:20px;margin-bottom:24px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
@@ -850,12 +922,15 @@ tbody tr:last-child td{border-bottom:none}
             <button class="btn primary" onclick="addCustomDomain()">Block Domain</button>
           </div>
           <div class="chips-row">
-            <span class="dim" style="font-size:11px;align-self:center;margin-right:4px">Presets:</span>
+            <span class="dim" style="font-size:11px;align-self:center;margin-right:4px">Threat Presets:</span>
+            <span class="preset-chip threat" onclick="quickAdd('fake-store-checkout.shop')">+ Fake Online Shops</span>
+            <span class="preset-chip threat" onclick="quickAdd('crypto-airdrop-drainer.xyz')">+ Crypto Drainers</span>
+            <span class="preset-chip threat" onclick="quickAdd('security-account-verify.top')">+ Phishing Lures</span>
+            <span class="preset-chip security" onclick="quickAdd('botnet-command-server.cc')">+ Malware C2</span>
             <span class="preset-chip" onclick="quickAdd('analytics.google.com')">+ Google Analytics</span>
             <span class="preset-chip" onclick="quickAdd('ads.tiktok.com')">+ TikTok Ads</span>
             <span class="preset-chip" onclick="quickAdd('graph.facebook.com')">+ Facebook Telemetry</span>
-            <span class="preset-chip" onclick="quickAdd('telemetry.samsungcloud.com')">+ Samsung Smart TV</span>
-            <span class="preset-chip" onclick="quickAdd('data.mistat.xiaomi.com')">+ Xiaomi Spyware</span>
+            <span class="preset-chip" onclick="quickAdd('telemetry.samsungcloud.com')">+ Smart TV Spyware</span>
           </div>
         </div>
       </div>
@@ -1311,6 +1386,9 @@ function renderStats(d) {
   if (d.upurl && !$('updateUrlInput').matches(':focus')) $('updateUrlInput').value = d.upurl;
   if (d.upiv && !$('updateIntervalInput').matches(':focus')) $('updateIntervalInput').value = d.upiv;
   if (d.upstat) $('updateStatusTxt').textContent = d.upstat;
+
+  if ($('secRebindCount')) $('secRebindCount').textContent = (d.rebind || 0).toLocaleString();
+  if ($('secRateCount')) $('secRateCount').textContent = (d.ratelimited || 0).toLocaleString();
 }
 
 // Client Table Rendering with Strict Active vs Offline Deduplication
@@ -1580,9 +1658,14 @@ function renderLogs() {
     var devLabel = (escapeHtml(name) ? ('<strong>' + escapeHtml(name) + '</strong> &bull; ') : '') +
       '<span class="mono dim">' + ip + '</span>';
 
-    var actionBadge = l.action === 'NODATA'
-      ? '<span class="status-badge nodata">NODATA</span>'
-      : '<span class="status-badge blocked">0.0.0.0</span>';
+    var actionBadge = '';
+    if (l.rebind || l.action === 'REBIND_DEFENSE') {
+      actionBadge = '<span class="status-badge rebind" style="background:rgba(244,63,94,0.22);border:1px solid #f43f5e;color:#f43f5e;font-weight:700">REBIND DEFENSE</span>';
+    } else if (l.action === 'NODATA') {
+      actionBadge = '<span class="status-badge nodata">NODATA</span>';
+    } else {
+      actionBadge = '<span class="status-badge blocked">0.0.0.0</span>';
+    }
 
     html += '<tr>' +
       '<td class="mono dim" style="white-space:nowrap">' + timeStr + '</td>' +
