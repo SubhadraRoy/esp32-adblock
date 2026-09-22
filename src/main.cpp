@@ -805,7 +805,6 @@ after_name:
 
     if (type == 1 && rdlen == 4) { // Type A (IPv4)
       uint8_t b0 = pkt[p], b1 = pkt[p + 1];
-      printf("[rebind-ip] dom=%s ip=%u.%u.%u.%u priv=%d\n", domain, b0, b1, pkt[p+2], pkt[p+3], isPrivateOrLoopbackIP(b0, b1));
       if (isPrivateOrLoopbackIP(b0, b1)) return true;
     } else if (type == 28 && rdlen == 16) { // Type AAAA (IPv6)
       if ((pkt[p] & 0xFE) == 0xFC) return true; // fc00::/7 Unique Local
@@ -878,8 +877,6 @@ static void dnsTask(void*) {
       struct sockaddr_in cli;
       socklen_t cliLen = sizeof(cli);
       int qlen = recvfrom(dnsSock, dnsRxBuf, sizeof(dnsRxBuf), 0, (struct sockaddr*)&cli, &cliLen);
-      printf("[dns-recv] qlen=%d cli=%s\n", qlen, inet_ntoa(cli.sin_addr));
-      fflush(stdout);
 
       if (qlen >= 12) {
         // Drop responses or non-standard opcodes immediately to prevent reflection loops
@@ -911,7 +908,7 @@ static void dnsTask(void*) {
               c->secWindow = curSec;
               c->qCount = 1;
             }
-            if (c->qCount > 100) { // >100 queries/second threshold
+            if (c->qCount > 50) { // >50 queries/second threshold protects against flood storms
               totalRateLimited++;
               UNLOCK();
               uint8_t refBuf[16];
@@ -923,8 +920,6 @@ static void dnsTask(void*) {
             }
 
             bool blocked = (c && c->banned) || (dl && isBlocked(domain));
-            printf("[dns-parse] dl=%u qt=%u dom=%s blk=%d\n", (unsigned)dl, (unsigned)qtype, domain, (int)blocked);
-            fflush(stdout);
             if (blocked) {
               totalBlocked++;
               if (c) c->blocked++;
@@ -974,9 +969,6 @@ static void dnsTask(void*) {
                 tx->hasOpt = hasOpt;
                 tx->inUse = true;
 
-                printf("[dns-fwd] dom=%s upTxid=%04x slot=%d\n", domain, upTxid, slot);
-                fflush(stdout);
-
                 // Replace ID with randomized upstream TXID
                 dnsRxBuf[0] = (uint8_t)(upTxid >> 8);
                 dnsRxBuf[1] = (uint8_t)(upTxid & 0xFF);
@@ -990,9 +982,6 @@ static void dnsTask(void*) {
                 }
 
                 sendto(upstreamSock, dnsRxBuf, qlen, 0, (struct sockaddr*)&upstreamAddr, sizeof(upstreamAddr));
-              } else {
-                printf("[dns-fwd-err] no slots for %s\n", domain);
-                fflush(stdout);
               }
             }
           }
@@ -1015,8 +1004,6 @@ static void dnsTask(void*) {
             break;
           }
         }
-        printf("[dns-rx-up] n=%d upTxid=%04x found=%d\n", n, upTxid, found);
-        fflush(stdout);
 
         if (found >= 0) {
           DnsTx* tx = &txTable[found];
@@ -1028,9 +1015,7 @@ static void dnsTask(void*) {
 
             // DNS Rebinding Attack Protection:
             // Intercept upstream answers containing RFC 1918 / loopback / link-local addresses
-            bool isReb = isRebindThreat(upRxBuf, n, 12 + tx->qlen, tx->domain);
-            printf("[dns-rebind-dbg] dom=%s n=%d qlen=%d isReb=%d\n", tx->domain, n, tx->qlen, (int)isReb);
-            if (isReb) {
+            if (isRebindThreat(upRxBuf, n, 12 + tx->qlen, tx->domain)) {
               LOCK();
               totalBlocked++;
               totalRebindBlocked++;
@@ -1628,6 +1613,8 @@ static esp_err_t handleStats(httpd_req_t* req) {
 }
 
 static esp_err_t handleLogJson(httpd_req_t* req) {
+  uint32_t clientIp = getReqClientIp(req);
+  if (clientIp && isIpLockedOut(clientIp)) return sendUnauthorized(req);
   bool auth = checkAuth(req);
   httpd_resp_set_type(req, "application/json");
   httpd_resp_set_hdr(req, "Cache-Control", "no-store");

@@ -22,6 +22,7 @@ All mutating endpoints (`/ban`, `/addblock`, `/unblock`, `/fetchnow`, `/setupdat
 - **Default Token Lockout:** If `ADMIN_TOKEN` is set to `"changeme"` in firmware, all mutating endpoints return `401 Unauthorized` until changed.
 - **CSRF Protection:** The server verifies `Origin` and `Referer` headers against the device IP and `esp32adblock.local`. Cross-origin browser requests from external websites are blocked.
 - **Constant-Time Verification:** Token comparison runs in constant-time to resist timing side-channel attacks.
+- **Progressive Brute-Force Lockout:** Tracks failed administrative authentication attempts per client IP. After 5 consecutive invalid tokens, the client IP is quarantined for 30 seconds, returning `429 Too Many Requests` across all API endpoints.
 
 ---
 
@@ -53,6 +54,8 @@ curl -s -H "X-Admin-Token: your_token" http://192.168.1.50/stats.json
   "upurl": "https://raw.githubusercontent.com/user/repo/main/blocklist.bin",
   "upiv": 24,
   "upstat": "ok: 215430 domains",
+  "rebind": 12,
+  "ratelimited": 4,
   "clients": [
     {
       "ip": "192.168.1.101",
@@ -99,7 +102,18 @@ Retrieves the onboard circular buffer (up to 64 entries) of recent blocked DNS q
     "mac": "aa:bb:cc:dd:ee:01",
     "domain": "ads.samsung.com",
     "type": "A",
-    "action": "0.0.0.0"
+    "action": "0.0.0.0",
+    "rebind": false
+  },
+  {
+    "time": 1726932445,
+    "ip": "192.168.1.103",
+    "name": "IoT Gateway",
+    "mac": "aa:bb:cc:dd:ee:03",
+    "domain": "malicious-rebind.attack.com",
+    "type": "A",
+    "action": "REBIND_DEFENSE",
+    "rebind": true
   },
   {
     "time": 1726932442,
@@ -108,7 +122,8 @@ Retrieves the onboard circular buffer (up to 64 entries) of recent blocked DNS q
     "mac": "aa:bb:cc:dd:ee:02",
     "domain": "telemetry.microsoft.com",
     "type": "AAAA",
-    "action": "NODATA"
+    "action": "NODATA",
+    "rebind": false
   }
 ]
 ```

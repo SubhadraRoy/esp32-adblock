@@ -18,11 +18,14 @@ Built purely on native **ESP-IDF v6.0.1 APIs** (zero Arduino framework dependenc
 - **No PSRAM Required:** Stores up to **245,000+ domain hashes** in a 1.20 MB LittleFS flash partition. Binary search executes directly in flash with unbuffered random reads.
 - **In-Memory Prefix Table (1,028 Bytes):** Partitions 40-bit FNV-1a hashes into 256 buckets by MSB. Cuts flash binary search reads from 18 down to 10 ($1.8\times$ faster), provides **0% false positives**, and preserves ~44 KB DRAM for TLS connections.
 - **Zero Head-of-Line (HoL) Blocking:** Event-driven asynchronous upstream DNS resolution using BSD `select()` and an in-flight transaction table (`DnsTx[32]`). Upstream latency or dropped packets to Quad9 never delay local ad-blocking.
+- **DNS Rebinding Shield:** Intercepts upstream responses containing RFC 1918 private IPs (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), loopback (`127.0.0.0/8`), link-local (`169.254.0.0/16`), and IPv6 (`fc00::/7`, `fe80::/10`, `::1`). Automatically sinkholes attacks to `0.0.0.0` while preserving legitimate internal domains (`.local`, `.lan`, `.home.arpa`).
+- **Anti-Flood & Rate Limiting Defense:** Per-client sliding window rate limiting. Drops or returns RFC 1035 `REFUSED` (RCODE=5) for packet bursts exceeding 50 QPS, protecting LwIP from amplification loops and rogue IoT storms.
+- **Progressive API Brute-Force Shield:** IP-based tracking on `esp_http_server` dual-stack IPv4-mapped IPv6 sockets. After 5 bad administrative tokens, the client IP is locked out with `HTTP 429 Too Many Requests` for 30 seconds across all endpoints.
 - **RFC 6891 (EDNS0) & RFC 1035 Compliant:** Preserves client OPT pseudo-RRs with 1232B payload clamping. Returns standard `0.0.0.0` for Type A and RFC NODATA (`ANCOUNT=0, NOERROR`) for IPv6 `AAAA` and `HTTPS` queries.
 - **64-Bit Monotonic Uptime:** Uses `millis64()` (`esp_timer_get_time() / 1000ULL`) across client tracking and background health monitors, eliminating the 49.7-day 32-bit `millis()` rollover eviction bug.
-- **Thermal & Silicon Optimized:** Dual-core Xtensa LX6 clocked at **160MHz** with Wi-Fi TX power capped at **17dBm**. Lowers board power by ~120mW and internal temps by 5°C–8°C, preventing LDO brownouts.
+- **Peak 240 MHz Dual-Core Power:** Xtensa LX6 dual-core CPU unlocked at maximum **240 MHz** (peak 600 DMIPS) with Wi-Fi TX power capped at **17dBm** for thermal stability.
 - **Zero Flash Wear in Normal Operation:** DNS queries perform 100% read-only operations. LittleFS wear-leveling yields an estimated flash endurance exceeding **600 years**.
-- **Embedded 5-Tab Web Dashboard:** Real-time pulse throughput chart, dual-section client manager with active/offline deduplication, inline device renaming with LittleFS persistence, manual stale client deletion, custom domain management, remote OTA blocklist auto-updates, and live blocked activity log (with search and CSV export). Engineered with chained timeouts, dirty-checked DOM updates, and CSRF Origin protection.
+- **Embedded 5-Tab Web Dashboard:** Security Hardening Center, real-time dual-channel pulse throughput chart, dual-section client manager with active/offline deduplication, inline device renaming with LittleFS persistence, manual stale client deletion, custom domain management, remote OTA blocklist auto-updates, and live blocked activity log (with search and CSV export). Engineered with chained timeouts, dirty-checked DOM updates, and CSRF Origin protection.
 
 ---
 
@@ -32,7 +35,7 @@ Built purely on native **ESP-IDF v6.0.1 APIs** (zero Arduino framework dependenc
 | :--- | :--- |
 | **Development Board** | **ESP32 DevKit V1** (ESP32-WROOM-32) |
 | **SoC / Silicon** | ESP32-D0WD-V3 (Revision v3.1, Eco 3.1) |
-| **CPU Core** | Dual-core 32-bit Xtensa LX6 @ **160 MHz** |
+| **CPU Core** | Dual-core 32-bit Xtensa LX6 @ **240 MHz** (600 DMIPS peak) |
 | **Memory** | 520 KB SRAM (~320 KB usable, ~115 KB free contiguous DRAM) |
 | **Flash Memory** | 4 MB SPI Flash (DIO mode @ 80 MHz, Boya Microelectronics) |
 | **Wi-Fi Subsystem** | 2.4 GHz 802.11 b/g/n (TX power capped at 17 dBm / 68 units) |
