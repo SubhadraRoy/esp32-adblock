@@ -12,9 +12,9 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
 
 # ESP32-D0WD-V3 (rev 3.1) Hardware & Clock Configurations
-# 160MHz CPU frequency drops board power by ~120mW and reduces enclosure temps by 5-8°C with zero latency impact
-CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160=y
-CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=160
+# 240MHz maximum dual-core CPU frequency delivers peak 600 DMIPS performance across Core 0 and Core 1
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240
 CONFIG_XTAL_FREQ_40=y
 CONFIG_XTAL_FREQ=40
 CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
