@@ -22,7 +22,7 @@ const char PAGE[] = R"HTML(<!doctype html>
   --border-focus:#0ea5e9;
   --text:#f8fafc;
   --text-muted:#94a3b8;
-  --text-dim:#64748b;
+  --text-dim:#94a3b8;
   --emerald:#10b981;
   --emerald-bg:rgba(16,185,129,0.12);
   --emerald-glow:rgba(16,185,129,0.25);
@@ -850,7 +850,7 @@ tbody tr:last-child td{border-bottom:none}
           </div>
         </div>
       </div>
-      <div class="pulse-chart" id="pulseChart"></div>
+      <canvas id="rateCanvas" style="width:100%;height:80px;display:block;border-radius:6px;background:rgba(0,0,0,0.25)"></canvas>
     </div>
 
   </div>
@@ -1140,6 +1140,8 @@ tbody tr:last-child td{border-bottom:none}
             <tr><td class="dim">Maintenance &amp; OTA</td><td class="mono">TLS 1.3 Handshake Task (Pri 1)</td></tr>
             <tr><td class="dim">Crypto Hardware</td><td class="mono purple">Hardware SHA-256 / AES / TRNG</td></tr>
             <tr><td class="dim">DRAM Headroom</td><td class="mono emerald"><span id="minHeapVal">--</span> KB Min Heap Watermark</td></tr>
+            <tr><td class="dim">Largest Free Block</td><td class="mono emerald"><span id="largestHeapVal">--</span> KB Contiguous</td></tr>
+            <tr><td class="dim">Boot Reset Reason</td><td class="mono"><span id="rstReasonVal">--</span></td></tr>
           </table>
         </div>
       </div>
@@ -1193,7 +1195,7 @@ tbody tr:last-child td{border-bottom:none}
       <div class="mono cyan" id="nameModalSub" style="font-size:14px;font-weight:700;margin-bottom:14px">192.168.0.x</div>
       <div class="form-group">
         <label class="form-label">Friendly Device Alias</label>
-        <input class="form-input" id="nameModalInput" placeholder="e.g. Primary QA Rig, Living Room TV" maxlength="31" onkeydown="if(event.key==='Enter')saveDeviceName()">
+        <input class="form-input" id="nameModalInput" placeholder="e.g. Workstation, Living Room TV" maxlength="31" onkeydown="if(event.key==='Enter')saveDeviceName()">
       </div>
       <div class="form-group" style="margin-top:12px">
         <label class="form-label">Connection Interface</label>
@@ -1249,8 +1251,10 @@ var activeTab = 'tab-overview';
 var targetEditIp = '';
 
 // Dual-Channel Throughput Pulse History
-var CHART_COLS = 48;
-var prevBlock = null, prevPass = null, pulseHistory = [];
+var MAX_CANVAS_POINTS = 60;
+var prevBlock = null, prevPass = null, lastPollTime = null;
+var pulseHistory = [];
+var smoothedQps = 0;
 
 // Cached data
 var lastStats = null;
@@ -1342,67 +1346,134 @@ window.addEventListener('keydown', function(e){
   }
 });
 
-// Dual-Channel Live DNS Throughput Pulse Chart
+// Dual-Channel Live DNS Throughput Canvas 2D Engine
 function initPulseChart() {
-  var c = $('pulseChart');
-  if (!c) return;
-  var html = '';
-  for (var i = 0; i < CHART_COLS; i++) {
-    html += '<div class="pulse-col" title="Waiting for traffic...">' +
-      '<div class="pulse-top"><div class="pulse-bar top" style="height:2px;opacity:0.35"></div></div>' +
-      '<div class="pulse-bot"><div class="pulse-bar bot" style="height:0%;opacity:0.35"></div></div>' +
-      '</div>';
-  }
-  c.innerHTML = html;
+  var canvas = $('rateCanvas');
+  if (!canvas) return;
+  drawCanvas(canvas);
+  window.addEventListener('resize', function() {
+    var c = $('rateCanvas');
+    if (c) drawCanvas(c);
+  });
 }
 
 function updatePulseChart(b, p) {
-  if (prevBlock !== null) {
-    if (b < prevBlock || p < prevPass) pulseHistory = []; // Board reboot or counter rollover
+  var now = Date.now();
+  if (prevBlock !== null && lastPollTime !== null) {
+    var dt = Math.max(0.5, (now - lastPollTime) / 1000.0);
+    if (b < prevBlock || p < prevPass) pulseHistory = [];
     var db = Math.max(0, b - prevBlock);
     var dp = Math.max(0, p - prevPass);
-    pulseHistory.push({ b: db, p: dp });
-    if (pulseHistory.length > CHART_COLS) pulseHistory.shift();
 
-    var qpm = Math.round((db + dp) * 20); // 3s interval * 20 = 60s
-    var qps = ((db + dp) / 3.0).toFixed(1);
+    var instQps = (db + dp) / dt;
+    smoothedQps = smoothedQps === 0 ? instQps : (0.35 * instQps + 0.65 * smoothedQps);
+    var qpm = Math.round(smoothedQps * 60);
+    var qpsStr = smoothedQps.toFixed(1);
+
     if ($('qpmRate')) $('qpmRate').textContent = qpm + ' q/m';
-    if ($('qpsRate')) $('qpsRate').textContent = '(' + qps + ' q/s)';
+    if ($('qpsRate')) $('qpsRate').textContent = '(' + qpsStr + ' q/s)';
+
+    pulseHistory.push({
+      passRate: dp / dt,
+      blockRate: db / dt,
+      pass: dp,
+      block: db
+    });
+    if (pulseHistory.length > MAX_CANVAS_POINTS) pulseHistory.shift();
   }
-  prevBlock = b; prevPass = p;
+  prevBlock = b;
+  prevPass = p;
+  lastPollTime = now;
 
-  var maxVal = 1;
-  pulseHistory.forEach(function(h){
-    if (h.p > maxVal) maxVal = h.p;
-    if (h.b > maxVal) maxVal = h.b;
-  });
+  var canvas = $('rateCanvas');
+  if (canvas) drawCanvas(canvas);
+}
 
-  var chartEl = $('pulseChart');
-  if (!chartEl) return;
-  var cols = chartEl.children;
-  for (var i = 0; i < CHART_COLS; i++) {
-    var idx = pulseHistory.length - (CHART_COLS - i);
-    var item = idx >= 0 ? pulseHistory[idx] : null;
-    var col = cols[i];
-    if (!col) continue;
-    var topBar = col.querySelector('.top');
-    var botBar = col.querySelector('.bot');
+function drawCanvas(canvas) {
+  var rect = canvas.getBoundingClientRect();
+  var dpr = window.devicePixelRatio || 1;
+  var w = Math.floor(rect.width);
+  var h = Math.floor(rect.height || 80);
+  if (w === 0) return;
+
+  if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+  }
+
+  var ctx = canvas.getContext('2d');
+  ctx.save();
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+
+  var midY = Math.floor(h / 2);
+
+  // Baseline separator
+  ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, midY);
+  ctx.lineTo(w, midY);
+  ctx.stroke();
+
+  if (pulseHistory.length === 0) {
+    ctx.fillStyle = 'rgba(148,163,184,0.4)';
+    ctx.font = '11px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('Listening for live DNS traffic across Core 0...', w / 2, midY);
+    ctx.restore();
+    return;
+  }
+
+  var maxRate = 1.0;
+  for (var i = 0; i < pulseHistory.length; i++) {
+    if (pulseHistory[i].passRate > maxRate) maxRate = pulseHistory[i].passRate;
+    if (pulseHistory[i].blockRate > maxRate) maxRate = pulseHistory[i].blockRate;
+  }
+
+  var numBars = MAX_CANVAS_POINTS;
+  var barWidth = Math.max(2, (w / numBars) - 2);
+  var step = w / numBars;
+
+  var greenGrad = ctx.createLinearGradient(0, 0, 0, midY);
+  greenGrad.addColorStop(0, '#34d399');
+  greenGrad.addColorStop(1, '#10b981');
+
+  var redGrad = ctx.createLinearGradient(0, midY, 0, h);
+  redGrad.addColorStop(0, '#f43f5e');
+  redGrad.addColorStop(1, '#e11d48');
+
+  for (var j = 0; j < numBars; j++) {
+    var histIdx = pulseHistory.length - (numBars - j);
+    var item = histIdx >= 0 ? pulseHistory[histIdx] : null;
+    var x = j * step + 1;
+
     if (item) {
-      var topPct = item.p > 0 ? Math.max(8, Math.round((item.p / maxVal) * 100)) : 2;
-      var botPct = item.b > 0 ? Math.max(8, Math.round((item.b / maxVal) * 100)) : 0;
-      topBar.style.height = topPct + '%';
-      topBar.style.opacity = item.p > 0 ? '1' : '0.35';
-      botBar.style.height = botPct + '%';
-      botBar.style.opacity = item.b > 0 ? '1' : '0.35';
-      col.title = 'Allowed: ' + item.p + ', Blocked: ' + item.b;
+      // Top bar (Allowed)
+      var topH = (item.passRate / maxRate) * (midY - 4);
+      if (item.passRate > 0) topH = Math.max(3, topH);
+      else topH = 1;
+
+      ctx.fillStyle = item.passRate > 0 ? greenGrad : 'rgba(16,185,129,0.2)';
+      ctx.fillRect(x, midY - topH, barWidth, topH);
+
+      // Bottom bar (Sinkholed)
+      var botH = (item.blockRate / maxRate) * (midY - 4);
+      if (item.blockRate > 0) botH = Math.max(3, botH);
+      else botH = 0;
+
+      if (botH > 0) {
+        ctx.fillStyle = redGrad;
+        ctx.fillRect(x, midY, barWidth, botH);
+      }
     } else {
-      topBar.style.height = '2px';
-      topBar.style.opacity = '0.35';
-      botBar.style.height = '0%';
-      botBar.style.opacity = '0.35';
-      col.title = 'Waiting for traffic...';
+      // Idle placeholder
+      ctx.fillStyle = 'rgba(255,255,255,0.06)';
+      ctx.fillRect(x, midY - 1, barWidth, 2);
     }
   }
+  ctx.restore();
 }
 
 // Chained Polling Loop
@@ -1464,8 +1535,8 @@ function renderStats(d) {
   $('navClientCount').textContent = clients.length;
   $('navRuleCount').textContent = (d.custom || []).length;
 
-  var lanCnt = d.lan_count !== undefined ? d.lan_count : (online.filter(function(c){ return c.conn === 'LAN'; }).length || 1);
-  var wifiCnt = d.wifi_count !== undefined ? d.wifi_count : (online.filter(function(c){ return c.conn !== 'LAN'; }).length);
+  var lanCnt = d.lan_count !== undefined ? d.lan_count : online.filter(function(c){ return c.conn === 'LAN'; }).length;
+  var wifiCnt = d.wifi_count !== undefined ? d.wifi_count : online.filter(function(c){ return c.conn !== 'LAN'; }).length;
   if ($('kpiDevSplit')) $('kpiDevSplit').textContent = lanCnt + ' Wired LAN \u2022 ' + wifiCnt + ' Wireless (Wi-Fi)';
 
   var rssi = d.rssi || -60;
@@ -1482,6 +1553,11 @@ function renderStats(d) {
   if ($('kpiUptime')) $('kpiUptime').textContent = 'Uptime: ' + (d.uptime || '0d 0h 0m');
 
   if ($('minHeapVal')) $('minHeapVal').textContent = Math.round((d.min_heap || d.heap || 0) / 1024);
+  if ($('largestHeapVal')) $('largestHeapVal').textContent = Math.round((d.largest_heap_block || 0) / 1024);
+  if ($('rstReasonVal')) {
+    var reasons = { 1:'Power-On Reset', 3:'Software Restart', 4:'Exception / Panic', 5:'Task Watchdog', 6:'Interrupt Watchdog', 7:'Brown-out Reset' };
+    $('rstReasonVal').textContent = reasons[d.rst_reason] || ('Code ' + (d.rst_reason || 1));
+  }
 
   if (d.upurl && !$('updateUrlInput').matches(':focus')) $('updateUrlInput').value = d.upurl;
   if (d.upiv && !$('updateIntervalInput').matches(':focus')) $('updateIntervalInput').value = d.upiv;
@@ -1502,7 +1578,24 @@ function renderClients() {
   var activeHtml = '', offlineHtml = '';
   var activeCount = 0, offlineCount = 0;
 
-  clients.forEach(function(c){
+  // Deduplicate roaming DHCP clients by physical MAC
+  var seenMacs = {};
+  var sortedClients = clients.slice().sort(function(a, b){ return (a.lastSeenSec || 0) - (b.lastSeenSec || 0); });
+  var dedupedClients = [];
+  sortedClients.forEach(function(c) {
+    var mac = (c.mac || '').toLowerCase();
+    if (mac && mac !== '--:--:--:--:--:--' && mac !== '00:00:00:00:00:00') {
+      if (seenMacs[mac]) {
+        seenMacs[mac].blocked = (seenMacs[mac].blocked || 0) + (c.blocked || 0);
+        seenMacs[mac].allowed = (seenMacs[mac].allowed || 0) + (c.allowed || 0);
+        return;
+      }
+      seenMacs[mac] = c;
+    }
+    dedupedClients.push(c);
+  });
+
+  dedupedClients.forEach(function(c){
     var ip = c.ip || '';
     var mac = c.mac || '--:--:--:--:--:--';
     var name = c.name || '';

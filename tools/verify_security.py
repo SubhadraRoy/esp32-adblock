@@ -4,9 +4,30 @@ import json
 import socket
 import struct
 import time
+import os
+import argparse
 
-HOST = '192.168.0.115'
-TOKEN = 'admin123'
+parser = argparse.ArgumentParser(description="ESP32 AdBlock Automated Security Verification Suite")
+parser.add_argument("--ip", default="esp32adblock.local", help="Target ESP32 IP or hostname (default: esp32adblock.local)")
+parser.add_argument("--token", default=os.environ.get("ADMIN_TOKEN", "your_secure_password"), help="Administrative token (default: $ADMIN_TOKEN or 'your_secure_password')")
+parser.add_argument("--client-ip", default=None, help="Client IP for device renaming test (auto-detected if omitted)")
+args = parser.parse_args()
+
+HOST = args.ip
+TOKEN = args.token
+
+def get_client_ip():
+    if args.client_ip:
+        return args.client_ip
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect((HOST, 80))
+        return s.getsockname()[0]
+    except Exception:
+        return '192.168.1.100'
+    finally:
+        s.close()
+
 results = []
 
 def record(name, passed, detail=''):
@@ -15,7 +36,7 @@ def record(name, passed, detail=''):
     print(f'[{status}] {name}' + (f' -- {detail}' if detail else ''))
 
 # Helper for DNS
-def dns_query(domain, qtype=1, timeout=3.0):
+def dns_query(domain, qtype=1, timeout=5.0):
     pkt = struct.pack('!HHHHHH', 0x2468, 0x0100, 1, 0, 0, 0)
     for part in domain.split('.'):
         pkt += bytes([len(part)]) + part.encode('ascii')
@@ -157,22 +178,22 @@ except Exception as e:
     record('9. Client Anti-Flood Rate Limiting', False, str(e))
 
 # 10. Device Friendly Renaming (/setname)
-my_ip = '192.168.0.63'
+my_ip = get_client_ip()
 try:
-    req = urllib.request.Request(f'http://{HOST}/setname?ip={my_ip}&name=Primary%20QA%20Rig', data=b'', headers={'X-Admin-Token': TOKEN, 'Connection': 'close'})
+    req = urllib.request.Request(f'http://{HOST}/setname?ip={my_ip}&name=Test%20Workstation', data=b'', headers={'X-Admin-Token': TOKEN, 'Connection': 'close'})
     with urllib.request.urlopen(req, timeout=5) as r:
         ok_set = (r.status == 200 and r.read().decode('utf-8') == 'ok')
     req = urllib.request.Request(f'http://{HOST}/stats.json', headers={'X-Admin-Token': TOKEN, 'Connection': 'close'})
     with urllib.request.urlopen(req, timeout=5) as r:
         st = json.loads(r.read().decode('utf-8'))
-        name_found = any(c.get('ip') == my_ip and c.get('name') == 'Primary QA Rig' for c in st.get('clients', []))
+        name_found = any(c.get('ip') == my_ip and c.get('name') == 'Test Workstation' for c in st.get('clients', []))
     record('10. Device Friendly Rename (/setname)', ok_set and name_found, f'Alias mapped to {my_ip}')
 except Exception as e:
     record('10. Device Friendly Rename (/setname)', False, str(e))
 
 # 11. Security / CSRF Foreign Origin Rejection
 try:
-    req = urllib.request.Request(f'http://{HOST}/ban?ip=192.168.0.99', data=b'', headers={'Origin': 'http://malicious-site.com', 'X-Admin-Token': TOKEN, 'Connection': 'close'})
+    req = urllib.request.Request(f'http://{HOST}/ban?ip=192.168.1.199', data=b'', headers={'Origin': 'http://malicious-site.com', 'X-Admin-Token': TOKEN, 'Connection': 'close'})
     try:
         with urllib.request.urlopen(req, timeout=3) as r:
             csrf_blocked = False
@@ -187,7 +208,7 @@ try:
     codes = []
     for attempt in range(6):
         try:
-            req = urllib.request.Request(f'http://{HOST}/setname?ip=192.168.0.99&name=Hack', data=b'', headers={'X-Admin-Token': 'wrong_token_xyz', 'Connection': 'close'})
+            req = urllib.request.Request(f'http://{HOST}/setname?ip=192.168.1.199&name=Hack', data=b'', headers={'X-Admin-Token': 'wrong_token_xyz', 'Connection': 'close'})
             with urllib.request.urlopen(req, timeout=3) as r:
                 codes.append(r.status)
         except urllib.error.HTTPError as e:

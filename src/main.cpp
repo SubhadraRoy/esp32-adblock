@@ -144,12 +144,12 @@ struct DevName {
   char conn[8]; // "LAN" or "WIFI"
   char name[32];
 };
-static const int MAX_DEV_NAMES = 64;
+static const int MAX_DEV_NAMES = 96;
 static DevName devNames[MAX_DEV_NAMES];
 static int numDevNames = 0;
 
 static const int MAX_CUSTOM = 128;
-static char customDom[MAX_CUSTOM][256];
+static char customDom[MAX_CUSTOM][64];
 static uint64_t customHash[MAX_CUSTOM];
 static int numCustom = 0;
 
@@ -167,6 +167,7 @@ static volatile bool manualFetchTrigger = false;
 
 // ---------- LOCK DISCIPLINE ----------
 static SemaphoreHandle_t stateMutex = nullptr;
+static SemaphoreHandle_t blocklistMutex = nullptr;
 #define LOCK()   lockWithDiagnostic()
 static inline void lockWithDiagnostic() {
   if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(2000)) == pdTRUE) return;
@@ -181,13 +182,13 @@ static inline void lockWithDiagnostic() {
 // Guarantees 0% false positives and cuts flash binary search reads by 44%.
 static uint32_t prefixTable[257];
 
-static void buildPrefixTable(FILE* f, uint32_t count) {
-  memset(prefixTable, 0, sizeof(prefixTable));
-  prefixTable[256] = count;
+static void buildPrefixTableTo(FILE* f, uint32_t count, uint32_t* targetTable) {
+  memset(targetTable, 0, sizeof(uint32_t) * 257);
+  targetTable[256] = count;
   if (!f || count == 0) return;
 
   uint32_t currentPrefix = 0;
-  prefixTable[0] = 0;
+  targetTable[0] = 0;
 
   static uint8_t chunk[2048]; // static to conserve task stack
   const uint32_t perChunk = sizeof(chunk) / HASH_BYTES;
@@ -205,16 +206,20 @@ static void buildPrefixTable(FILE* f, uint32_t count) {
       uint8_t topByte = chunk[k * HASH_BYTES + 4]; // b[4] is MSB in little-endian
       while (currentPrefix < topByte) {
         currentPrefix++;
-        prefixTable[currentPrefix] = processed + k;
+        targetTable[currentPrefix] = processed + k;
       }
     }
     processed += got;
   }
   while (currentPrefix < 256) {
     currentPrefix++;
-    prefixTable[currentPrefix] = count;
+    targetTable[currentPrefix] = count;
   }
   printf("[prefix] built index for %lu domains in RAM (1028 B)\n", (unsigned long)count);
+}
+
+static inline void buildPrefixTable(FILE* f, uint32_t count) {
+  buildPrefixTableTo(f, count, prefixTable);
 }
 
 // ---------- Hashing / Matching ----------
@@ -227,25 +232,35 @@ static uint64_t fnv40(const char* s, size_t n) {
   return h & HASH_MASK;
 }
 
-static bool inFlash(uint64_t h) { // caller holds stateMutex
-  if (!blocklist || numHashes == 0) return false;
+static bool inFlash(uint64_t h) {
+  if (!blocklistMutex) return false;
+  if (xSemaphoreTake(blocklistMutex, pdMS_TO_TICKS(100)) != pdTRUE) return false;
+  if (!blocklist || numHashes == 0) {
+    xSemaphoreGive(blocklistMutex);
+    return false;
+  }
   uint8_t p = (uint8_t)(h >> 32);
   int32_t lo = (int32_t)prefixTable[p];
   int32_t hi = (int32_t)prefixTable[p + 1] - 1;
-  if (lo > hi) return false; // 0 flash reads for unrepresented prefixes
+  if (lo > hi) {
+    xSemaphoreGive(blocklistMutex);
+    return false; // 0 flash reads for unrepresented prefixes
+  }
 
   uint8_t b[HASH_BYTES];
+  bool found = false;
   while (lo <= hi) {
     int32_t mid = (lo + hi) >> 1;
-    if (fseek(blocklist, (long)mid * HASH_BYTES, SEEK_SET) != 0) return false;
-    if (fread(b, 1, HASH_BYTES, blocklist) != HASH_BYTES) return false;
+    if (fseek(blocklist, (long)mid * HASH_BYTES, SEEK_SET) != 0) break;
+    if (fread(b, 1, HASH_BYTES, blocklist) != HASH_BYTES) break;
     uint64_t v = 0;
     for (int k = 0; k < HASH_BYTES; k++) v |= ((uint64_t)b[k]) << (8 * k);
     if (v < h) lo = mid + 1;
     else if (v > h) hi = mid - 1;
-    else return true;
+    else { found = true; break; }
   }
-  return false;
+  xSemaphoreGive(blocklistMutex);
+  return found;
 }
 
 static bool inCustom(uint64_t h) {
@@ -255,7 +270,7 @@ static bool inCustom(uint64_t h) {
   return false;
 }
 
-static bool isBlocked(const char* domain) { // caller holds stateMutex
+static bool isBlocked(const char* domain) {
   const char* p = domain;
   while (p && *p) {
     uint64_t h = fnv40(p, strlen(p));
@@ -338,22 +353,10 @@ static bool saveCustom() {
   if (!f) return false;
   bool ok = true;
   LOCK();
-  int count = numCustom;
-  UNLOCK();
-  for (int i = 0; i < count; i++) {
-    char entry[256];
-    LOCK();
-    if (i < numCustom) {
-      strncpy(entry, customDom[i], sizeof(entry) - 1);
-      entry[sizeof(entry) - 1] = 0;
-    } else {
-      entry[0] = 0;
-    }
-    UNLOCK();
-    if (entry[0]) {
-      if (fprintf(f, "%s\n", entry) < 0) { ok = false; break; }
-    }
+  for (int i = 0; i < numCustom; i++) {
+    if (fprintf(f, "%s\n", customDom[i]) < 0) { ok = false; break; }
   }
+  UNLOCK();
   fflush(f);
   fsync(fileno(f));
   fclose(f);
@@ -363,7 +366,7 @@ static bool saveCustom() {
 }
 
 static bool addCustom(const char* dIn) {
-  char d[256];
+  char d[64];
   strncpy(d, dIn, sizeof(d) - 1);
   d[sizeof(d) - 1] = 0;
   size_t n = normalizeDomain(d, strlen(d));
@@ -390,12 +393,12 @@ static bool addCustom(const char* dIn) {
 }
 
 static bool removeCustom(const char* dIn) {
-  char d[256];
+  char d[64];
   strncpy(d, dIn, sizeof(d) - 1);
   d[sizeof(d) - 1] = 0;
   size_t n = normalizeDomain(d, strlen(d));
   (void)n;
-  char savedDom[256] = "";
+  char savedDom[64] = "";
   uint64_t savedHash = 0;
   int removedIdx = -1;
 
@@ -403,10 +406,12 @@ static bool removeCustom(const char* dIn) {
   for (int i = 0; i < numCustom; i++) {
     if (strcmp(customDom[i], d) == 0) {
       removedIdx = i;
-      strcpy(savedDom, customDom[i]);
+      strncpy(savedDom, customDom[i], sizeof(savedDom) - 1);
+      savedDom[sizeof(savedDom) - 1] = 0;
       savedHash = customHash[i];
       for (int j = i; j < numCustom - 1; j++) {
-        strcpy(customDom[j], customDom[j + 1]);
+        strncpy(customDom[j], customDom[j + 1], sizeof(customDom[0]) - 1);
+        customDom[j][sizeof(customDom[0]) - 1] = 0;
         customHash[j] = customHash[j + 1];
       }
       numCustom--;
@@ -420,10 +425,12 @@ static bool removeCustom(const char* dIn) {
     LOCK();
     if (numCustom < MAX_CUSTOM) {
       for (int j = numCustom; j > removedIdx; j--) {
-        strcpy(customDom[j], customDom[j - 1]);
+        strncpy(customDom[j], customDom[j - 1], sizeof(customDom[0]) - 1);
+        customDom[j][sizeof(customDom[0]) - 1] = 0;
         customHash[j] = customHash[j - 1];
       }
-      strcpy(customDom[removedIdx], savedDom);
+      strncpy(customDom[removedIdx], savedDom, sizeof(customDom[0]) - 1);
+      customDom[removedIdx][sizeof(customDom[0]) - 1] = 0;
       customHash[removedIdx] = savedHash;
       numCustom++;
     }
@@ -548,11 +555,6 @@ static void loadNames() {
       conn[sizeof(conn) - 1] = 0;
       nm = sp2 + 1;
       while (*nm == ' ') nm++;
-    } else {
-      char ipStr[16];
-      ipToStr(a.s_addr, ipStr, sizeof(ipStr));
-      if (strcmp(ipStr, "192.168.0.63") == 0) strcpy(conn, "LAN");
-      else strcpy(conn, "WIFI");
     }
     if (!*nm) continue;
 
@@ -572,20 +574,16 @@ static bool saveNames() {
   snprintf(tmp, sizeof(tmp), "%s.new", path);
   FILE* f = fopen(tmp, "w");
   if (!f) return false;
-  DevName snap[MAX_DEV_NAMES];
-  int count = 0;
-  LOCK();
-  count = numDevNames;
-  for (int i = 0; i < count; i++) snap[i] = devNames[i];
-  UNLOCK();
 
   bool ok = true;
-  for (int i = 0; i < count; i++) {
+  LOCK();
+  for (int i = 0; i < numDevNames; i++) {
     char s[16];
-    ipToStr(snap[i].ip, s, sizeof(s));
-    const char* cn = (snap[i].conn[0]) ? snap[i].conn : "WIFI";
-    if (fprintf(f, "%s %s %s\n", s, cn, snap[i].name) < 0) { ok = false; break; }
+    ipToStr(devNames[i].ip, s, sizeof(s));
+    const char* cn = (devNames[i].conn[0]) ? devNames[i].conn : "WIFI";
+    if (fprintf(f, "%s %s %s\n", s, cn, devNames[i].name) < 0) { ok = false; break; }
   }
+  UNLOCK();
   fflush(f);
   fsync(fileno(f));
   fclose(f);
@@ -633,13 +631,7 @@ static Dev* getClient(uint32_t ip) { // caller holds stateMutex
     }
   }
 
-  // Default connection interface: LAN for primary QA host (.63), WIFI for others
   char defaultConn[8] = "WIFI";
-  char ipBuf[16];
-  ipToStr(ip, ipBuf, sizeof(ipBuf));
-  if (strcmp(ipBuf, "192.168.0.63") == 0) {
-    strcpy(defaultConn, "LAN");
-  }
 
   if (numClients < MAX_CLIENTS) {
     Dev* c = &clients[numClients++];
@@ -784,7 +776,7 @@ struct DnsTx {
   uint64_t expireMs;
   uint8_t qsection[256];
   int qlen;
-  char domain[96];
+  char domain[256];
   uint16_t qtype;
   bool hasOpt;
   bool inUse;
@@ -795,17 +787,17 @@ static DnsTx txTable[MAX_TX];
 static uint8_t dnsRxBuf[1472];
 static uint8_t upRxBuf[1472];
 
-// RFC 1035 Refused (RCODE=5) response for client query rate limiting
-static int buildRefused(const uint8_t* inPkt, int inLen, uint8_t* outPkt) {
-  if (inLen < 12) return 0;
-  memcpy(outPkt, inPkt, 12);
-  outPkt[2] = 0x81; // QR=1, RD=1
+// RFC 1035 / RFC 5625 Refused (RCODE=5) response for client query rate limiting
+static int buildRefused(const uint8_t* inPkt, int inLen, int qend, uint8_t* outPkt) {
+  if (inLen < 12 || qend < 12 || qend > inLen) return 0;
+  memcpy(outPkt, inPkt, qend);
+  outPkt[2] = 0x80 | (inPkt[2] & 0x01); // QR=1, preserve client RD bit
   outPkt[3] = 0x85; // RA=1, RCODE=5 (REFUSED)
-  outPkt[4] = 0; outPkt[5] = 0; // QDCOUNT=0
+  outPkt[4] = 0; outPkt[5] = 1; // QDCOUNT=1 (RFC 5625 §4.1)
   outPkt[6] = 0; outPkt[7] = 0; // ANCOUNT=0
   outPkt[8] = 0; outPkt[9] = 0; // NSCOUNT=0
   outPkt[10] = 0; outPkt[11] = 0; // ARCOUNT=0
-  return 12;
+  return qend;
 }
 
 // RFC 1918 / Loopback / Link-Local IP filtering for DNS Rebinding Protection
@@ -921,170 +913,210 @@ static void dnsTask(void*) {
     tv.tv_usec = 20000; // 20ms poll interval
 
     int activity = select(maxfd, &readfds, NULL, NULL, &tv);
+    if (activity < 0) {
+      if (errno != EINTR) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+      }
+      continue;
+    }
 
-    // 1. Process client queries
+    // 1. Process client queries (burst drain up to 8 packets)
     if (activity > 0 && FD_ISSET(dnsSock, &readfds)) {
-      struct sockaddr_in cli;
-      socklen_t cliLen = sizeof(cli);
-      int qlen = recvfrom(dnsSock, dnsRxBuf, sizeof(dnsRxBuf), 0, (struct sockaddr*)&cli, &cliLen);
+      for (int burst = 0; burst < 8; burst++) {
+        struct sockaddr_in cli;
+        socklen_t cliLen = sizeof(cli);
+        int qlen = recvfrom(dnsSock, dnsRxBuf, sizeof(dnsRxBuf), 0, (struct sockaddr*)&cli, &cliLen);
+        if (qlen < 12) break;
 
-      if (qlen >= 12) {
         // Drop responses or non-standard opcodes immediately to prevent reflection loops
         if ((dnsRxBuf[2] & 0x80) != 0 || ((dnsRxBuf[2] >> 3) & 0x0F) != 0) {
-          // ignore invalid query
-        } else {
-          char domain[256];
-          uint16_t qtype = 0;
-          int qend = qlen;
-          bool hasOpt = false;
-          size_t dl = parseQuery(dnsRxBuf, qlen, domain, &qtype, &qend, &hasOpt);
+          continue;
+        }
 
-          if (dl == 0 && qtype == 0) {
-            // Send RFC 1035 FORMERR
-            uint8_t errBuf[16];
-            int errLen = buildFormErr(dnsRxBuf, qlen, errBuf);
-            if (errLen > 0) {
-              sendto(dnsSock, errBuf, errLen, 0, (struct sockaddr*)&cli, cliLen);
-            }
+        char domain[256];
+        uint16_t qtype = 0;
+        int qend = qlen;
+        bool hasOpt = false;
+        size_t dl = parseQuery(dnsRxBuf, qlen, domain, &qtype, &qend, &hasOpt);
+
+        if (dl == 0 && qtype == 0) {
+          // Send RFC 1035 FORMERR
+          uint8_t errBuf[16];
+          int errLen = buildFormErr(dnsRxBuf, qlen, errBuf);
+          if (errLen > 0) {
+            sendto(dnsSock, errBuf, errLen, 0, (struct sockaddr*)&cli, cliLen);
+          }
+          continue;
+        }
+
+        bool clientBanned = false;
+        bool rateExceeded = false;
+        LOCK();
+        Dev* c = getClient((uint32_t)cli.sin_addr.s_addr);
+
+        // Per-client query rate limiting (anti-flood / anti-amplification storm)
+        if (c) {
+          uint32_t curSec = (uint32_t)(millis64() / 1000ULL);
+          if (c->secWindow == curSec) {
+            c->qCount++;
           } else {
-            LOCK();
-            Dev* c = getClient((uint32_t)cli.sin_addr.s_addr);
+            c->secWindow = curSec;
+            c->qCount = 1;
+          }
+          if (c->qCount > 50) { // >50 queries/second threshold protects against flood storms
+            totalRateLimited++;
+            rateExceeded = true;
+          }
+          clientBanned = c->banned;
+        }
+        UNLOCK();
 
-            // Per-client query rate limiting (anti-flood / anti-amplification storm)
-            if (c) {
-              uint32_t curSec = (uint32_t)(millis64() / 1000ULL);
-              if (c->secWindow == curSec) {
-                c->qCount++;
-              } else {
-                c->secWindow = curSec;
-                c->qCount = 1;
-              }
-              if (c->qCount > 50) { // >50 queries/second threshold protects against flood storms
-                totalRateLimited++;
-                UNLOCK();
-                uint8_t refBuf[16];
-                int refLen = buildRefused(dnsRxBuf, qlen, refBuf);
-                if (refLen > 0) {
-                  sendto(dnsSock, refBuf, refLen, 0, (struct sockaddr*)&cli, cliLen);
-                }
-                continue;
-              }
+        if (rateExceeded) {
+          uint8_t refBuf[512];
+          int refLen = buildRefused(dnsRxBuf, qlen, qend, refBuf);
+          if (refLen > 0) {
+            sendto(dnsSock, refBuf, refLen, 0, (struct sockaddr*)&cli, cliLen);
+          }
+          continue;
+        }
+
+        // Fast-path lookup OUTSIDE stateMutex: zero lock contention with Core 1 HTTP server
+        bool blocked = clientBanned || (dl && isBlocked(domain));
+
+        LOCK();
+        c = getClient((uint32_t)cli.sin_addr.s_addr);
+        if (blocked) {
+          totalBlocked++;
+          if (c) c->blocked++;
+          logBlocked((uint32_t)cli.sin_addr.s_addr, domain, qtype, false);
+        } else {
+          totalAllowed++;
+          if (c) c->allowed++;
+        }
+        UNLOCK();
+
+        if (blocked) {
+          // Local ad sinkhole responds in < 0.5ms with ZERO upstream latency
+          int rlen = buildBlocked(dnsRxBuf, qend, qtype, hasOpt);
+          if (rlen > 0) {
+            sendto(dnsSock, dnsRxBuf, rlen, 0, (struct sockaddr*)&cli, cliLen);
+          }
+        } else {
+          // Forward allowed query asynchronously via transaction table
+          int slot = -1;
+          uint64_t now = millis64();
+          for (int i = 0; i < MAX_TX; i++) {
+            if (!txTable[i].inUse || now > txTable[i].expireMs) {
+              slot = i;
+              break;
             }
+          }
 
-            bool blocked = (c && c->banned) || (dl && isBlocked(domain));
-            if (blocked) {
-              totalBlocked++;
-              if (c) c->blocked++;
-              logBlocked((uint32_t)cli.sin_addr.s_addr, domain, qtype, false);
-            } else {
-              totalAllowed++;
-              if (c) c->allowed++;
-            }
-            UNLOCK();
-
-            if (blocked) {
-              // Local ad sinkhole responds in < 0.5ms with ZERO upstream latency
-              int rlen = buildBlocked(dnsRxBuf, qend, qtype, hasOpt);
-              if (rlen > 0) {
-                sendto(dnsSock, dnsRxBuf, rlen, 0, (struct sockaddr*)&cli, cliLen);
-              }
-            } else {
-              // Forward allowed query asynchronously via transaction table
-              int slot = -1;
-              uint64_t now = millis64();
-              for (int i = 0; i < MAX_TX; i++) {
-                if (!txTable[i].inUse || now > txTable[i].expireMs) {
-                  slot = i;
+          if (slot >= 0) {
+            DnsTx* tx = &txTable[slot];
+            uint16_t clientTxid = (dnsRxBuf[0] << 8) | dnsRxBuf[1];
+            uint16_t upTxid = 0;
+            // Upstream TXID uniqueness check across active slots
+            for (int attempt = 0; attempt < 5; attempt++) {
+              upTxid = (uint16_t)(esp_random() & 0xFFFF);
+              bool collision = false;
+              for (int j = 0; j < MAX_TX; j++) {
+                if (txTable[j].inUse && txTable[j].upstreamTxid == upTxid) {
+                  collision = true;
                   break;
                 }
               }
+              if (!collision) break;
+            }
 
-              if (slot >= 0) {
-                DnsTx* tx = &txTable[slot];
-                uint16_t clientTxid = (dnsRxBuf[0] << 8) | dnsRxBuf[1];
-                uint16_t upTxid = (uint16_t)(esp_random() & 0xFFFF);
+            tx->clientTxid = clientTxid;
+            tx->upstreamTxid = upTxid;
+            tx->clientAddr = cli;
+            tx->clientLen = cliLen;
+            tx->expireMs = now + 1800; // 1.8s timeout
+            tx->qlen = qend - 12;
+            if (tx->qlen > 0 && tx->qlen <= (int)sizeof(tx->qsection)) {
+              memcpy(tx->qsection, dnsRxBuf + 12, tx->qlen);
+            } else {
+              tx->qlen = 0;
+            }
+            strncpy(tx->domain, domain, sizeof(tx->domain) - 1);
+            tx->domain[sizeof(tx->domain) - 1] = 0;
+            tx->qtype = qtype;
+            tx->hasOpt = hasOpt;
+            tx->inUse = true;
 
-                tx->clientTxid = clientTxid;
-                tx->upstreamTxid = upTxid;
-                tx->clientAddr = cli;
-                tx->clientLen = cliLen;
-                tx->expireMs = now + 1800; // 1.8s timeout
-                tx->qlen = qend - 12;
-                if (tx->qlen > 0 && tx->qlen <= (int)sizeof(tx->qsection)) {
-                  memcpy(tx->qsection, dnsRxBuf + 12, tx->qlen);
-                } else {
-                  tx->qlen = 0;
-                }
-                strncpy(tx->domain, domain, sizeof(tx->domain) - 1);
-                tx->domain[sizeof(tx->domain) - 1] = 0;
-                tx->qtype = qtype;
-                tx->hasOpt = hasOpt;
-                tx->inUse = true;
+            // Replace ID with randomized upstream TXID
+            dnsRxBuf[0] = (uint8_t)(upTxid >> 8);
+            dnsRxBuf[1] = (uint8_t)(upTxid & 0xFF);
 
-                // Replace ID with randomized upstream TXID
-                dnsRxBuf[0] = (uint8_t)(upTxid >> 8);
-                dnsRxBuf[1] = (uint8_t)(upTxid & 0xFF);
-
-                // Clamp advertised EDNS0 buffer size to 1232 bytes
-                if (hasOpt && qend + 4 < qlen) {
-                  if (dnsRxBuf[qend] == 0x00 && dnsRxBuf[qend + 1] == 0x00 && dnsRxBuf[qend + 2] == 0x29) {
-                    dnsRxBuf[qend + 3] = 0x04;
-                    dnsRxBuf[qend + 4] = 0xD0;
-                  }
-                }
-
-                sendto(upstreamSock, dnsRxBuf, qlen, 0, (struct sockaddr*)&upstreamAddr, sizeof(upstreamAddr));
+            // Clamp advertised EDNS0 buffer size to 1232 bytes
+            if (hasOpt && qend + 4 < qlen) {
+              if (dnsRxBuf[qend] == 0x00 && dnsRxBuf[qend + 1] == 0x00 && dnsRxBuf[qend + 2] == 0x29) {
+                dnsRxBuf[qend + 3] = 0x04;
+                dnsRxBuf[qend + 4] = 0xD0;
               }
             }
+
+            sendto(upstreamSock, dnsRxBuf, qlen, 0, (struct sockaddr*)&upstreamAddr, sizeof(upstreamAddr));
           }
         }
       }
     }
 
-    // 2. Process upstream responses
+    // 2. Process upstream responses (burst drain up to 8 packets)
     if (activity > 0 && FD_ISSET(upstreamSock, &readfds)) {
-      struct sockaddr_in from;
-      socklen_t fl = sizeof(from);
-      int n = recvfrom(upstreamSock, upRxBuf, sizeof(upRxBuf), 0, (struct sockaddr*)&from, &fl);
+      for (int burst = 0; burst < 8; burst++) {
+        struct sockaddr_in from;
+        socklen_t fl = sizeof(from);
+        int n = recvfrom(upstreamSock, upRxBuf, sizeof(upRxBuf), 0, (struct sockaddr*)&from, &fl);
+        if (n < 12) break;
 
-      if (n >= 12 && from.sin_addr.s_addr == upstreamAddr.sin_addr.s_addr) {
-        uint16_t upTxid = (upRxBuf[0] << 8) | upRxBuf[1];
-        int found = -1;
-        for (int i = 0; i < MAX_TX; i++) {
-          if (txTable[i].inUse && txTable[i].upstreamTxid == upTxid) {
-            found = i;
-            break;
-          }
-        }
-
-        if (found >= 0) {
-          DnsTx* tx = &txTable[found];
-          bool qMatch = (tx->qlen == 0 || (n >= 12 + tx->qlen && memcmp(upRxBuf + 12, tx->qsection, tx->qlen) == 0));
-          if (qMatch) {
-            // Restore client transaction ID
-            upRxBuf[0] = (uint8_t)(tx->clientTxid >> 8);
-            upRxBuf[1] = (uint8_t)(tx->clientTxid & 0xFF);
-
-            // DNS Rebinding Attack Protection:
-            // Intercept upstream answers containing RFC 1918 / loopback / link-local addresses
-            if (isRebindThreat(upRxBuf, n, 12 + tx->qlen, tx->domain)) {
-              LOCK();
-              totalBlocked++;
-              totalRebindBlocked++;
-              logBlocked((uint32_t)tx->clientAddr.sin_addr.s_addr, tx->domain, tx->qtype, true);
-              Dev* c = getClient((uint32_t)tx->clientAddr.sin_addr.s_addr);
-              if (c) c->blocked++;
-              UNLOCK();
-
-              // Sinkhole response with 0.0.0.0 (Type A) or NODATA (Type AAAA)
-              int rlen = buildBlocked(upRxBuf, 12 + tx->qlen, tx->qtype, tx->hasOpt);
-              if (rlen > 0) {
-                sendto(dnsSock, upRxBuf, rlen, 0, (struct sockaddr*)&tx->clientAddr, tx->clientLen);
-              }
-            } else {
-              sendto(dnsSock, upRxBuf, n, 0, (struct sockaddr*)&tx->clientAddr, tx->clientLen);
+        if (from.sin_addr.s_addr == upstreamAddr.sin_addr.s_addr) {
+          uint16_t upTxid = (upRxBuf[0] << 8) | upRxBuf[1];
+          int found = -1;
+          for (int i = 0; i < MAX_TX; i++) {
+            if (txTable[i].inUse && txTable[i].upstreamTxid == upTxid) {
+              found = i;
+              break;
             }
-            tx->inUse = false;
+          }
+
+          if (found >= 0) {
+            DnsTx* tx = &txTable[found];
+            bool qMatch = (tx->qlen == 0 || (n >= 12 + tx->qlen && memcmp(upRxBuf + 12, tx->qsection, tx->qlen) == 0));
+            if (qMatch) {
+              // Restore client transaction ID
+              upRxBuf[0] = (uint8_t)(tx->clientTxid >> 8);
+              upRxBuf[1] = (uint8_t)(tx->clientTxid & 0xFF);
+
+              // DNS Rebinding Attack Protection:
+              // Intercept upstream answers containing RFC 1918 / loopback / link-local addresses
+              if (isRebindThreat(upRxBuf, n, 12 + tx->qlen, tx->domain)) {
+                LOCK();
+                totalBlocked++;
+                totalRebindBlocked++;
+                if (totalAllowed > 0) totalAllowed--; // Correct metric: previously incremented as allowed
+                logBlocked((uint32_t)tx->clientAddr.sin_addr.s_addr, tx->domain, tx->qtype, true);
+                Dev* c = getClient((uint32_t)tx->clientAddr.sin_addr.s_addr);
+                if (c) {
+                  c->blocked++;
+                  if (c->allowed > 0) c->allowed--; // Correct metric: subtract false-allow
+                }
+                UNLOCK();
+
+                // Sinkhole response with 0.0.0.0 (Type A) or NODATA (Type AAAA)
+                if (tx->qlen > 0) {
+                  int rlen = buildBlocked(upRxBuf, 12 + tx->qlen, tx->qtype, tx->hasOpt);
+                  if (rlen > 0) {
+                    sendto(dnsSock, upRxBuf, rlen, 0, (struct sockaddr*)&tx->clientAddr, tx->clientLen);
+                  }
+                }
+              } else {
+                sendto(dnsSock, upRxBuf, n, 0, (struct sockaddr*)&tx->clientAddr, tx->clientLen);
+              }
+              tx->inUse = false;
+            }
           }
         }
       }
@@ -1142,6 +1174,7 @@ static bool validateBlocklistFile(const char* path) {
 }
 
 static void reopenBlocklist() { // caller holds stateMutex
+  if (blocklistMutex) xSemaphoreTake(blocklistMutex, portMAX_DELAY);
   if (blocklist) { fclose(blocklist); blocklist = nullptr; }
   if (validateBlocklistFile(BLOCKLIST_PATH)) {
     blocklist = fopen(BLOCKLIST_PATH, "rb");
@@ -1159,6 +1192,7 @@ static void reopenBlocklist() { // caller holds stateMutex
     printf("[blocklist] file validation failed or missing at %s\n", BLOCKLIST_PATH);
     numHashes = 0;
   }
+  if (blocklistMutex) xSemaphoreGive(blocklistMutex);
 }
 
 static void beginBlocklistSwap() {
@@ -1171,6 +1205,21 @@ static bool commitNewBlocklist() {
     return false;
   }
 
+  // Pre-build prefix table outside any mutex to prevent stalling Core 0
+  FILE* fNew = fopen(BLOCKLIST_NEW, "rb");
+  if (!fNew) {
+    remove(BLOCKLIST_NEW);
+    return false;
+  }
+  fseek(fNew, 0, SEEK_END);
+  long sz = ftell(fNew);
+  fseek(fNew, 0, SEEK_SET);
+  uint32_t newHashes = sz > 0 ? (uint32_t)(sz / HASH_BYTES) : 0;
+  static uint32_t tempPrefix[257];
+  buildPrefixTableTo(fNew, newHashes, tempPrefix);
+  fclose(fNew);
+
+  if (blocklistMutex) xSemaphoreTake(blocklistMutex, portMAX_DELAY);
   LOCK();
   if (blocklist) { fclose(blocklist); blocklist = nullptr; }
   bool renamed = (rename(BLOCKLIST_NEW, BLOCKLIST_PATH) == 0);
@@ -1178,13 +1227,11 @@ static bool commitNewBlocklist() {
     blocklist = fopen(BLOCKLIST_PATH, "rb");
     if (blocklist) {
       setvbuf(blocklist, NULL, _IONBF, 0);
-      fseek(blocklist, 0, SEEK_END);
-      long sz = ftell(blocklist);
-      fseek(blocklist, 0, SEEK_SET);
-      numHashes = sz > 0 ? (uint32_t)(sz / HASH_BYTES) : 0;
-      buildPrefixTable(blocklist, numHashes);
+      numHashes = newHashes;
+      memcpy(prefixTable, tempPrefix, sizeof(prefixTable));
     } else {
       numHashes = 0;
+      memset(prefixTable, 0, sizeof(prefixTable));
     }
   } else {
     printf("[blocklist] rename failed (errno %d) -- old list preserved\n", errno);
@@ -1192,6 +1239,7 @@ static bool commitNewBlocklist() {
     reopenBlocklist();
   }
   UNLOCK();
+  if (blocklistMutex) xSemaphoreGive(blocklistMutex);
 
   return renamed;
 }
@@ -1275,7 +1323,8 @@ static bool fetchBlocklist(const char* url) {
         if (w != (size_t)r) { writeErr = true; break; }
         total += r;
       }
-      ok = !writeErr && (r >= 0) && total > 0 && (declaredLen <= 0 || total == declaredLen);
+      bool complete = esp_http_client_is_complete_data_received(client);
+      ok = !writeErr && (r >= 0) && total > 0 && complete && (declaredLen <= 0 || total == declaredLen);
     }
     esp_http_client_close(client);
   } else {
@@ -1359,6 +1408,10 @@ static void wifiInit() {
   staNetif = esp_netif_create_default_wifi_sta();
   wifi_init_config_t wcfg = WIFI_INIT_CONFIG_DEFAULT();
   ESP_ERROR_CHECK(esp_wifi_init(&wcfg));
+
+  // Protect flash wear: store Wi-Fi configuration and state in RAM only (zero NVS flash writes on boot)
+  ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
+
   wifiEvents = xEventGroupCreate();
   ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &onWifiEvent, NULL));
   ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &onWifiEvent, NULL));
@@ -1372,9 +1425,6 @@ static void wifiInit() {
 
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
-
-  // Protect flash wear: store Wi-Fi status in RAM only
-  ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
   ESP_ERROR_CHECK(esp_wifi_start());
 
   // Cap Wi-Fi TX power at 17dBm (68 * 0.25dBm) to prevent LDO voltage droop on DevKit V1
@@ -1401,15 +1451,51 @@ static void wifiInit() {
 }
 
 // ---------- Web Server & Security Hardening ----------
-static void sendf(httpd_req_t* req, char* buf, size_t bufsz, const char* fmt, ...) {
-  va_list args;
-  va_start(args, fmt);
-  int n = vsnprintf(buf, bufsz, fmt, args);
-  va_end(args);
-  if (n < 0) n = 0;
-  else if (n >= (int)bufsz) n = (int)bufsz - 1;
-  httpd_resp_send_chunk(req, buf, n);
-}
+// MTU-coalescing streaming chunker (1,400 bytes stack-allocated, 0 bytes BSS)
+struct JsonChunker {
+  httpd_req_t* req;
+  char buf[1400];
+  size_t len;
+
+  JsonChunker(httpd_req_t* r) : req(r), len(0) {}
+
+  void append(const char* s, size_t slen) {
+    while (slen > 0) {
+      size_t avail = sizeof(buf) - len;
+      if (slen < avail) {
+        memcpy(buf + len, s, slen);
+        len += slen;
+        break;
+      } else {
+        memcpy(buf + len, s, avail);
+        httpd_resp_send_chunk(req, buf, sizeof(buf));
+        len = 0;
+        s += avail;
+        slen -= avail;
+      }
+    }
+  }
+
+  void printf(const char* fmt, ...) {
+    char tmp[512];
+    va_list args;
+    va_start(args, fmt);
+    int n = vsnprintf(tmp, sizeof(tmp), fmt, args);
+    va_end(args);
+    if (n > 0) {
+      if (n >= (int)sizeof(tmp)) n = sizeof(tmp) - 1;
+      append(tmp, n);
+    }
+  }
+
+  void flush() {
+    if (len > 0) {
+      httpd_resp_send_chunk(req, buf, len);
+      len = 0;
+    }
+    httpd_resp_send_chunk(req, NULL, 0);
+  }
+};
 
 // Zero-heap-allocation query string parser
 static bool getQueryArg(httpd_req_t* req, const char* key, char* out, size_t outsz) {
@@ -1420,17 +1506,29 @@ static bool getQueryArg(httpd_req_t* req, const char* key, char* out, size_t out
   return httpd_query_key_value(q, key, out, outsz) == ESP_OK;
 }
 
-// Constant-time string comparison without early length exit
+// Constant-time string comparison with fixed 64-iteration loop to prevent token length side-channel leaks
 static bool constantTimeCompare(const char* a, const char* b) {
+  if (!a || !b) return false;
   size_t la = strlen(a), lb = strlen(b);
-  size_t len = la > lb ? la : lb;
   volatile unsigned char diff = (unsigned char)(la ^ lb);
-  for (size_t i = 0; i < len; i++) {
+  for (size_t i = 0; i < 64; i++) {
     unsigned char ca = (i < la) ? (unsigned char)a[i] : 0;
     unsigned char cb = (i < lb) ? (unsigned char)b[i] : 0;
     diff |= (ca ^ cb);
   }
   return diff == 0;
+}
+
+// Strict Origin & Referer host matching
+static bool isAllowedOriginHost(const char* uri, const char* localIp) {
+  if (!uri || !*uri) return false;
+  const char* h = strstr(uri, "://");
+  h = h ? h + 3 : uri;
+  size_t len = 0;
+  while (h[len] && h[len] != ':' && h[len] != '/' && h[len] != '?' && h[len] != '#') len++;
+  if (len == 18 && strncmp(h, "esp32adblock.local", 18) == 0) return true;
+  if (localIp && len == strlen(localIp) && strncmp(h, localIp, len) == 0) return true;
+  return false;
 }
 
 // Origin & Referer CSRF protection
@@ -1440,14 +1538,10 @@ static bool validateOrigin(httpd_req_t* req) {
   getLocalIPStr(ip, sizeof(ip));
 
   if (httpd_req_get_hdr_value_str(req, "Origin", hdr, sizeof(hdr)) == ESP_OK) {
-    if (strstr(hdr, "esp32adblock.local") == nullptr && strstr(hdr, ip) == nullptr) {
-      return false;
-    }
+    if (!isAllowedOriginHost(hdr, ip)) return false;
   }
   if (httpd_req_get_hdr_value_str(req, "Referer", hdr, sizeof(hdr)) == ESP_OK) {
-    if (strstr(hdr, "esp32adblock.local") == nullptr && strstr(hdr, ip) == nullptr) {
-      return false;
-    }
+    if (!isAllowedOriginHost(hdr, ip)) return false;
   }
   return true;
 }
@@ -1589,7 +1683,7 @@ static esp_err_t handleStats(httpd_req_t* req) {
   uint32_t clientIp = getReqClientIp(req);
   if (clientIp && isIpLockedOut(clientIp)) return sendUnauthorized(req);
   bool auth = checkAuth(req);
-  uint32_t up = millis() / 1000;
+  uint64_t up = millis64() / 1000ULL;
   char ipbuf[16];
   getLocalIPStr(ipbuf, sizeof(ipbuf));
 
@@ -1614,33 +1708,38 @@ static esp_err_t handleStats(httpd_req_t* req) {
     myIpAddr = myIp.ip.addr;
   }
 
+  uint64_t nowMs = millis64();
   int lanCount = 0, wifiCount = 0;
   for (int i = 0; i < nc; i++) {
     if (snap[i].ip == myIpAddr || snap[i].ip == 0x0100007F) continue;
-    if (strcmp(snap[i].conn, "LAN") == 0) lanCount++;
-    else wifiCount++;
+    if (nowMs >= snap[i].lastSeen && (nowMs - snap[i].lastSeen <= 900000ULL)) {
+      if (strcmp(snap[i].conn, "LAN") == 0) lanCount++;
+      else wifiCount++;
+    }
   }
 
   httpd_resp_set_type(req, "application/json");
   httpd_resp_set_hdr(req, "Cache-Control", "no-store");
   setSecurityHeaders(req);
 
-  char buf2[768], esc1[300], esc2[160];
+  char esc1[300], esc2[160];
   jescInto(esc1, sizeof(esc1), urlCopy);
   jescInto(esc2, sizeof(esc2), statusCopy);
 
-  sendf(req, buf2, sizeof(buf2),
+  JsonChunker chunker(req);
+  chunker.printf(
     "{\"ip\":\"%s\",\"blocked\":%lu,\"allowed\":%lu,\"domains\":%lu,\"rssi\":%d,\"temp\":-999.0,\"heap\":%lu,"
-    "\"min_heap\":%lu,\"cpu_mhz\":240,\"cores\":2,\"core0\":\"DNS Engine (UDP :53)\",\"core1\":\"Web Server & Maintenance\","
+    "\"min_heap\":%lu,\"largest_heap_block\":%u,\"rst_reason\":%d,\"cpu_mhz\":240,\"cores\":2,"
+    "\"core0\":\"DNS Engine (UDP :53)\",\"core1\":\"Web Server & Maintenance\","
     "\"lan_count\":%d,\"wifi_count\":%d,"
-    "\"uptime\":\"%lud %luh %lum\",\"upurl\":\"%s\",\"upiv\":%lu,\"upstat\":\"%s\",\"rebind\":%lu,\"ratelimited\":%lu,\"clients\":[",
+    "\"uptime\":\"%llud %lluh %llum\",\"upurl\":\"%s\",\"upiv\":%lu,\"upstat\":\"%s\",\"rebind\":%lu,\"ratelimited\":%lu,\"clients\":[",
     ipbuf, (unsigned long)tb, (unsigned long)ta, (unsigned long)nh, getRSSI(),
     (unsigned long)esp_get_free_heap_size(), (unsigned long)esp_get_minimum_free_heap_size(),
+    (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT), (int)esp_reset_reason(),
     lanCount, wifiCount,
-    (unsigned long)(up/86400), (unsigned long)((up%86400)/3600), (unsigned long)((up%3600)/60),
+    (unsigned long long)(up / 86400ULL), (unsigned long long)((up % 86400ULL) / 3600ULL), (unsigned long long)((up % 3600ULL) / 60ULL),
     esc1, (unsigned long)iv, esc2, (unsigned long)trb, (unsigned long)trl);
 
-  uint64_t nowMs = millis64();
   bool firstClient = true;
   for (int i = 0; i < nc; i++) {
     if (snap[i].ip == myIpAddr || snap[i].ip == 0x0100007F) continue;
@@ -1657,16 +1756,17 @@ static esp_err_t handleStats(httpd_req_t* req) {
     jescInto(escName, sizeof(escName), snap[i].name);
     const char* cn = (snap[i].conn[0]) ? snap[i].conn : "WIFI";
     uint64_t lastSeenSec = (nowMs > snap[i].lastSeen) ? ((nowMs - snap[i].lastSeen) / 1000ULL) : 0;
-    sendf(req, buf2, sizeof(buf2), "%s{\"ip\":\"%s\",\"mac\":\"%s\",\"name\":\"%s\",\"conn\":\"%s\",\"blocked\":%lu,\"allowed\":%lu,\"banned\":%s,\"lastSeenSec\":%llu}",
+    chunker.printf("%s{\"ip\":\"%s\",\"mac\":\"%s\",\"name\":\"%s\",\"conn\":\"%s\",\"blocked\":%lu,\"allowed\":%lu,\"banned\":%s,\"lastSeenSec\":%llu}",
       firstClient ? "" : ",", ips, macBuf, escName, cn,
       (unsigned long)snap[i].blocked, (unsigned long)snap[i].allowed, snap[i].banned ? "true" : "false",
       (unsigned long long)lastSeenSec);
     firstClient = false;
   }
 
-  sendf(req, buf2, sizeof(buf2), "],\"custom\":[");
+  chunker.printf("],\"custom\":[");
+  bool firstDom = true;
   for (int i = 0; i < ncust; i++) {
-    char cDom[256];
+    char cDom[64];
     LOCK();
     if (i < numCustom) {
       strncpy(cDom, customDom[i], sizeof(cDom) - 1);
@@ -1676,12 +1776,13 @@ static esp_err_t handleStats(httpd_req_t* req) {
     }
     UNLOCK();
     if (!cDom[0]) continue;
-    char esc[300];
+    char esc[100];
     jescInto(esc, sizeof(esc), cDom);
-    sendf(req, buf2, sizeof(buf2), "%s\"%s\"", i ? "," : "", esc);
+    chunker.printf("%s\"%s\"", firstDom ? "" : ",", esc);
+    firstDom = false;
   }
-  sendf(req, buf2, sizeof(buf2), "]}");
-  httpd_resp_send_chunk(req, NULL, 0);
+  chunker.printf("]}");
+  chunker.flush();
   return ESP_OK;
 }
 
@@ -1703,8 +1804,9 @@ static esp_err_t handleLogJson(httpd_req_t* req) {
   memcpy(snap, blockLog, sizeof(BlockLogEntry) * MAX_BLOCK_LOG);
   UNLOCK();
 
-  char buf[512], escDom[128], escName[64];
-  sendf(req, buf, sizeof(buf), "[");
+  char escDom[128], escName[64];
+  JsonChunker chunker(req);
+  chunker.printf("[");
 
   // Iterate newest to oldest
   for (int i = 0; i < snapCount; i++) {
@@ -1745,7 +1847,7 @@ static esp_err_t handleLogJson(httpd_req_t* req) {
     jescInto(escName, sizeof(escName), devName);
 
     const char* actionStr = e->isRebind ? "REBIND_DEFENSE" : ((e->qtype == 1) ? "0.0.0.0" : "NODATA");
-    sendf(req, buf, sizeof(buf),
+    chunker.printf(
       "%s{\"time\":%lu,\"ip\":\"%s\",\"name\":\"%s\",\"mac\":\"%s\",\"domain\":\"%s\",\"type\":\"%s\",\"action\":\"%s\",\"rebind\":%s}",
       i ? "," : "",
       (unsigned long)e->epoch,
@@ -1759,8 +1861,8 @@ static esp_err_t handleLogJson(httpd_req_t* req) {
     );
   }
 
-  sendf(req, buf, sizeof(buf), "]");
-  httpd_resp_send_chunk(req, NULL, 0);
+  chunker.printf("]");
+  chunker.flush();
   return ESP_OK;
 }
 
@@ -1792,13 +1894,11 @@ static esp_err_t handleSetName(httpd_req_t* req) {
   }
 
   LOCK();
-  // Update in active clients table
+  // Update in active clients table - clear alias in RAM if empty
   for (int i = 0; i < numClients; i++) {
     if (clients[i].ip == ip) {
-      if (decodedName[0]) {
-        strncpy(clients[i].name, decodedName, sizeof(clients[i].name) - 1);
-        clients[i].name[sizeof(clients[i].name) - 1] = 0;
-      }
+      strncpy(clients[i].name, decodedName, sizeof(clients[i].name) - 1);
+      clients[i].name[sizeof(clients[i].name) - 1] = 0;
       if (connVal[0]) {
         strncpy(clients[i].conn, connVal, sizeof(clients[i].conn) - 1);
         clients[i].conn[sizeof(clients[i].conn) - 1] = 0;
@@ -2080,7 +2180,7 @@ static void mountFS() {
   esp_vfs_littlefs_conf_t conf = {};
   conf.base_path = FS_BASE;
   conf.partition_label = "spiffs";
-  conf.format_if_mount_failed = true;
+  conf.format_if_mount_failed = false; // Non-destructive initial attempts
   conf.dont_mount = false;
 
   esp_err_t err = ESP_FAIL;
@@ -2091,8 +2191,13 @@ static void mountFS() {
     vTaskDelay(pdMS_TO_TICKS(100));
   }
   if (err != ESP_OK) {
-    printf("LittleFS mount FAILED permanently: %s\n", esp_err_to_name(err));
-    return;
+    printf("LittleFS mounting failed after 3 attempts, trying emergency format...\n");
+    conf.format_if_mount_failed = true;
+    err = esp_vfs_littlefs_register(&conf);
+    if (err != ESP_OK) {
+      printf("LittleFS mount & format FAILED permanently: %s\n", esp_err_to_name(err));
+      return;
+    }
   }
 
   cleanOrphanFiles();
@@ -2131,11 +2236,15 @@ static bool udpBind(int* sock, uint16_t port) {
 }
 
 // ---------- Maintenance Task (Core 1) ----------
+static uint32_t retryBackoffSec = 0;
+static const uint32_t MAX_BACKOFF_SEC = 3600;
+
 static void maintenanceTask(void*) {
   for (;;) {
     checkWifiHealth();
     char urlCopy[256] = "";
     bool shouldFetch = false;
+    uint64_t now = millis64();
 
     if (manualFetchTrigger) {
       manualFetchTrigger = false;
@@ -2151,11 +2260,18 @@ static void maintenanceTask(void*) {
     if (!shouldFetch) {
       LOCK();
       if (updateUrl[0]) {
-        uint64_t now = millis64();
+        uint64_t targetIntervalMs = (retryBackoffSec > 0)
+            ? ((uint64_t)retryBackoffSec * 1000ULL)
+            : ((uint64_t)updateIntervalH * 3600000ULL);
+
         if (lastCheckMs == 0) {
-          lastCheckMs = now;
-        } else if (now - lastCheckMs >= updateIntervalH * 3600000ULL) {
-          lastCheckMs = now;
+          // Trigger initial check 60s after boot once network has stabilized
+          if (now >= 60000ULL) {
+            shouldFetch = true;
+            strncpy(urlCopy, updateUrl, sizeof(urlCopy) - 1);
+            urlCopy[sizeof(urlCopy) - 1] = 0;
+          }
+        } else if (now - lastCheckMs >= targetIntervalMs) {
           shouldFetch = true;
           strncpy(urlCopy, updateUrl, sizeof(urlCopy) - 1);
           urlCopy[sizeof(urlCopy) - 1] = 0;
@@ -2164,7 +2280,19 @@ static void maintenanceTask(void*) {
       UNLOCK();
     }
 
-    if (shouldFetch) fetchBlocklist(urlCopy);
+    if (shouldFetch) {
+      bool success = fetchBlocklist(urlCopy);
+      LOCK();
+      lastCheckMs = millis64();
+      if (success) {
+        retryBackoffSec = 0;
+      } else {
+        if (retryBackoffSec == 0) retryBackoffSec = 60;
+        else retryBackoffSec = (retryBackoffSec * 2 > MAX_BACKOFF_SEC) ? MAX_BACKOFF_SEC : retryBackoffSec * 2;
+        printf("[remote] fetch failed, retrying in %lu s\n", (unsigned long)retryBackoffSec);
+      }
+      UNLOCK();
+    }
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
 }
@@ -2172,6 +2300,7 @@ static void maintenanceTask(void*) {
 // ---------- Main Entry Point ----------
 extern "C" void app_main() {
   stateMutex = xSemaphoreCreateMutex();
+  blocklistMutex = xSemaphoreCreateMutex();
 
   esp_err_t nvsErr = nvs_flash_init();
   if (nvsErr == ESP_ERR_NVS_NO_FREE_PAGES || nvsErr == ESP_ERR_NVS_NEW_VERSION_FOUND) {

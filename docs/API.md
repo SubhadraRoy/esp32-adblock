@@ -6,7 +6,7 @@ The ESP32 AdBlock device provides an onboard HTTP REST API served on port 80. Th
 
 ## Authentication & Security
 
-All mutating endpoints (`/ban`, `/addblock`, `/unblock`, `/fetchnow`, `/setupdate`, `/upload`) require administrative authentication.
+All mutating endpoints (`/ban`, `/addblock`, `/unblock`, `/fetchnow`, `/setupdate`, `/upload`, `/setname`, `/delclient`) require administrative authentication.
 
 ### Authentication Methods
 1. **HTTP Header (Recommended):**
@@ -20,8 +20,8 @@ All mutating endpoints (`/ban`, `/addblock`, `/unblock`, `/fetchnow`, `/setupdat
 
 ### Security Policy:
 - **Default Token Lockout:** If `ADMIN_TOKEN` is set to `"changeme"` in firmware, all mutating endpoints return `401 Unauthorized` until changed.
-- **CSRF Protection:** The server verifies `Origin` and `Referer` headers against the device IP and `esp32adblock.local`. Cross-origin browser requests from external websites are blocked.
-- **Constant-Time Verification:** Token comparison runs in constant-time to resist timing side-channel attacks.
+- **CSRF Host Protection:** The server strictly verifies `Origin` and `Referer` headers against the device IP and `esp32adblock.local`. Cross-origin browser requests from external websites are blocked.
+- **Constant-Time Verification:** Token comparison runs in a fixed 64-iteration loop (`constantTimeCompare`) to resist timing side-channel attacks.
 - **Progressive Brute-Force Lockout:** Tracks failed administrative authentication attempts per client IP. After 5 consecutive invalid tokens, the client IP is quarantined for 30 seconds, returning `429 Too Many Requests` across all API endpoints.
 
 ---
@@ -37,48 +37,58 @@ Retrieves real-time throughput metrics, system telemetry, connected client state
 
 #### Example Request:
 ```bash
-curl -s -H "X-Admin-Token: your_token" http://192.168.1.50/stats.json
+curl -s -H "X-Admin-Token: your_token" http://<device-ip>/stats.json
 ```
 
 #### Example Response:
 ```json
 {
   "ip": "192.168.1.50",
-  "blocked": 1420,
-  "allowed": 18950,
+  "blocked": 129,
+  "allowed": 662,
   "domains": 215430,
-  "rssi": -45,
+  "rssi": -36,
   "temp": -999.0,
-  "heap": 115224,
-  "uptime": "14d 6h 32m",
+  "heap": 105664,
+  "min_heap": 82612,
+  "largest_heap_block": 90112,
+  "rst_reason": 1,
+  "cpu_mhz": 240,
+  "cores": 2,
+  "core0": "DNS Engine (UDP :53)",
+  "core1": "Web Server & Maintenance",
+  "lan_count": 1,
+  "wifi_count": 2,
+  "uptime": "0d 0h 20m",
   "upurl": "https://raw.githubusercontent.com/user/repo/main/blocklist.bin",
   "upiv": 24,
-  "upstat": "ok: 215430 domains",
-  "rebind": 12,
-  "ratelimited": 4,
+  "upstat": "never",
+  "rebind": 3,
+  "ratelimited": 977,
   "clients": [
     {
-      "ip": "192.168.1.101",
+      "ip": "192.168.1.100",
       "mac": "aa:bb:cc:dd:ee:01",
-      "name": "Living Room TV",
-      "blocked": 842,
-      "allowed": 9210,
+      "name": "Desktop Workstation",
+      "conn": "LAN",
+      "blocked": 128,
+      "allowed": 630,
       "banned": false,
-      "lastSeenSec": 14
+      "lastSeenSec": 2
     },
     {
-      "ip": "192.168.1.102",
+      "ip": "192.168.1.105",
       "mac": "aa:bb:cc:dd:ee:02",
-      "name": "Work Laptop",
-      "blocked": 12,
-      "allowed": 412,
+      "name": "Living Room TV",
+      "conn": "WIFI",
+      "blocked": 1,
+      "allowed": 32,
       "banned": false,
-      "lastSeenSec": 1420
+      "lastSeenSec": 15
     }
   ],
   "custom": [
-    "ad-tracker.example.com",
-    "telemetry.vendor.com"
+    "fake-store-checkout.shop"
   ]
 }
 ```
@@ -86,7 +96,7 @@ curl -s -H "X-Admin-Token: your_token" http://192.168.1.50/stats.json
 ---
 
 ### 2. Blocked Activity Log (`GET /log.json`)
-Retrieves the onboard circular buffer (up to 64 entries) of recent blocked DNS queries with millisecond resolution timestamps, client IP, friendly device name, and query details.
+Retrieves the onboard circular buffer (up to 64 entries) of recent blocked DNS queries with timestamps, client IP, friendly device name, and query details.
 
 - **URL:** `/log.json`
 - **Method:** `GET`
@@ -97,30 +107,30 @@ Retrieves the onboard circular buffer (up to 64 entries) of recent blocked DNS q
 [
   {
     "time": 1726932450,
-    "ip": "192.168.1.101",
+    "ip": "192.168.1.105",
     "name": "Living Room TV",
-    "mac": "aa:bb:cc:dd:ee:01",
-    "domain": "ads.samsung.com",
+    "mac": "aa:bb:cc:dd:ee:02",
+    "domain": "graph.facebook.com",
     "type": "A",
     "action": "0.0.0.0",
     "rebind": false
   },
   {
     "time": 1726932445,
-    "ip": "192.168.1.103",
-    "name": "IoT Gateway",
-    "mac": "aa:bb:cc:dd:ee:03",
-    "domain": "malicious-rebind.attack.com",
+    "ip": "192.168.1.100",
+    "name": "Desktop Workstation",
+    "mac": "aa:bb:cc:dd:ee:01",
+    "domain": "192.168.1.1.nip.io",
     "type": "A",
     "action": "REBIND_DEFENSE",
     "rebind": true
   },
   {
     "time": 1726932442,
-    "ip": "192.168.1.102",
-    "name": "Work Laptop",
-    "mac": "aa:bb:cc:dd:ee:02",
-    "domain": "telemetry.microsoft.com",
+    "ip": "192.168.1.100",
+    "name": "Desktop Workstation",
+    "mac": "aa:bb:cc:dd:ee:01",
+    "domain": "doubleclick.net",
     "type": "AAAA",
     "action": "NODATA",
     "rebind": false
@@ -130,22 +140,23 @@ Retrieves the onboard circular buffer (up to 64 entries) of recent blocked DNS q
 
 ---
 
-### 3. Rename Device (`POST /setname`)
-Assigns or clears a custom friendly name for a client IP address. Persisted atomically to `/lfs/names.txt` across reboots.
+### 3. Rename Device & Set Interface (`POST /setname`)
+Assigns or clears a custom friendly name and physical interface classification for a client IP address. Persisted atomically to `/lfs/names.txt` across reboots.
 
-- **URL:** `/setname?ip=<client_ip>&name=<friendly_name>`
+- **URL:** `/setname?ip=<client_ip>&name=<friendly_name>&conn=<interface>`
 - **Method:** `POST`
 - **Auth Required:** Yes
 
 #### Parameters:
 | Name | Type | Description |
 | :--- | :--- | :--- |
-| `ip` | String | Client IPv4 address (e.g. `192.168.1.101`) |
-| `name` | String | URL-encoded device alias (e.g. `Smart%20TV`, max 31 chars). Leave empty to clear. |
+| `ip` | String | Client IPv4 address (e.g. `192.168.1.100`) |
+| `name` | String | URL-encoded device alias (max 31 chars). Leave empty to clear alias. |
+| `conn` | String | Connection interface: `LAN` (Wired Ethernet) or `WIFI` (Wireless). |
 
 #### Example Request:
 ```bash
-curl -X POST -H "X-Admin-Token: your_token" "http://192.168.1.50/setname?ip=192.168.1.101&name=Living%20Room%20TV"
+curl -X POST -H "X-Admin-Token: your_token" "http://<device-ip>/setname?ip=192.168.1.100&name=Desktop%20Workstation&conn=LAN"
 ```
 #### Response:
 `ok` (HTTP 200)
@@ -161,7 +172,7 @@ Manually purges a device from the client tracking table and clears any stored al
 
 #### Example Request:
 ```bash
-curl -X POST -H "X-Admin-Token: your_token" "http://192.168.1.50/delclient?ip=192.168.1.102"
+curl -X POST -H "X-Admin-Token: your_token" "http://<device-ip>/delclient?ip=192.168.1.199"
 ```
 #### Response:
 `ok` (HTTP 200)
@@ -175,14 +186,9 @@ Adds a domain to the custom blacklist. Stored persistently in `/lfs/custom.txt`.
 - **Method:** `POST`
 - **Auth Required:** Yes
 
-#### Parameters:
-| Name | Type | Description |
-| :--- | :--- | :--- |
-| `d` | String | Fully-qualified domain name (letters, numbers, hyphens, dots). Subdomains automatically match. |
-
 #### Example Request:
 ```bash
-curl -X POST -H "X-Admin-Token: your_token" "http://192.168.1.50/addblock?d=ads.example.com"
+curl -X POST -H "X-Admin-Token: your_token" "http://<device-ip>/addblock?d=ads.example.com"
 ```
 #### Response:
 `ok` (HTTP 200)
@@ -198,7 +204,7 @@ Removes a previously added custom domain from the blacklist.
 
 #### Example Request:
 ```bash
-curl -X POST -H "X-Admin-Token: your_token" "http://192.168.1.50/unblock?d=ads.example.com"
+curl -X POST -H "X-Admin-Token: your_token" "http://<device-ip>/unblock?d=ads.example.com"
 ```
 #### Response:
 `ok` (HTTP 200)
@@ -214,7 +220,7 @@ Toggles DNS resolution ban for a specific client IP address. Banned clients rece
 
 #### Example Request:
 ```bash
-curl -X POST -H "X-Admin-Token: your_token" "http://192.168.1.50/ban?ip=192.168.1.102"
+curl -X POST -H "X-Admin-Token: your_token" "http://<device-ip>/ban?ip=192.168.1.105"
 ```
 #### Response:
 `ok` (HTTP 200)
@@ -238,7 +244,7 @@ Uploads a pre-compiled, sorted 40-bit binary blocklist to flash memory.
 ```bash
 curl -X POST -H "X-Admin-Token: your_token" \
      --data-binary @blocklist.bin \
-     http://192.168.1.50/upload
+     http://<device-ip>/upload
 ```
 #### Response:
 `ok` (HTTP 200)
@@ -246,7 +252,7 @@ curl -X POST -H "X-Admin-Token: your_token" \
 ---
 
 ### 9. Configure Auto-Update (`POST /setupdate`)
-Configures the remote blocklist auto-update parameters.
+Configures remote blocklist auto-update parameters with exponential backoff on fetch failures.
 
 - **URL:** `/setupdate?u=<https_url>&h=<hours>`
 - **Method:** `POST`
@@ -261,7 +267,7 @@ Configures the remote blocklist auto-update parameters.
 #### Example Request:
 ```bash
 curl -X POST -H "X-Admin-Token: your_token" \
-     "http://192.168.1.50/setupdate?u=https://example.com/blocklist.bin&h=48"
+     "http://<device-ip>/setupdate?u=https://example.com/blocklist.bin&h=48"
 ```
 #### Response:
 `ok` (HTTP 200)
@@ -277,8 +283,7 @@ Asynchronously triggers an immediate background blocklist download using the con
 
 #### Example Request:
 ```bash
-curl -X POST -H "X-Admin-Token: your_token" http://192.168.1.50/fetchnow
+curl -X POST -H "X-Admin-Token: your_token" http://<device-ip>/fetchnow
 ```
 #### Response:
 `fetch scheduled` (HTTP 202 Accepted)
-
