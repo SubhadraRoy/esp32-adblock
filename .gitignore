@@ -43,3 +43,7 @@ venv/
 # Local private credentials (never committed)
 *credentials.h
 wifi_credentials.h
+
+# Video render intermediate frames & audio stems
+brag-output/work/frames/
+brag-output/work/*.wav
