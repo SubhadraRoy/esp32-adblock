@@ -1,0 +1,913 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>ESP32 AdBlock Launch Video Renderer</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #07090e;
+      overflow: hidden;
+      width: 1920px;
+      height: 1080px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+    #renderCanvas {
+      width: 1920px;
+      height: 1080px;
+      display: block;
+    }
+  </style>
+</head>
+<body>
+<canvas id="renderCanvas" width="1920" height="1080"></canvas>
+<script>
+  const canvas = document.getElementById('renderCanvas');
+  const ctx = canvas.getContext('2d', { alpha: false });
+
+  const TOTAL_FRAMES = 600;
+  const FPS = 30;
+
+  // Pre-seed pseudo-random particles for deterministic rendering
+  const particles = [];
+  let seed = 1234567;
+  function rand() {
+    seed = (seed * 16807) % 2147483647;
+    return (seed - 1) / 2147483646;
+  }
+  for (let i = 0; i < 75; i++) {
+    particles.push({
+      x: rand() * 1920,
+      y: rand() * 1080,
+      vx: (rand() - 0.5) * 1.2,
+      vy: (rand() - 0.5) * 1.2,
+      r: 1.5 + rand() * 2.5,
+      alpha: 0.2 + rand() * 0.5
+    });
+  }
+
+  // Math helper functions
+  function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+  function lerp(a, b, t) { return a + (b - a) * t; }
+  function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+  function easeInOutQuad(t) { return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2; }
+  function spring(t) {
+    return 1 - Math.exp(-6 * t) * Math.cos(7 * t);
+  }
+
+  // Draw rounded rectangle helper
+  function drawRoundedRect(x, y, w, h, r, fillStyle, strokeStyle, lineWidth) {
+    ctx.beginPath();
+    ctx.roundRect(x, y, w, h, r);
+    if (fillStyle) {
+      ctx.fillStyle = fillStyle;
+      ctx.fill();
+    }
+    if (strokeStyle && lineWidth) {
+      ctx.lineWidth = lineWidth;
+      ctx.strokeStyle = strokeStyle;
+      ctx.stroke();
+    }
+  }
+
+  // Draw ambient background: starfield, grid, and dark radial vignette
+  function drawBackground(f, sceneProgress) {
+    // Deep gradient
+    const bgGrad = ctx.createRadialGradient(960, 540, 100, 960, 540, 1100);
+    bgGrad.addColorStop(0, '#0c1326');
+    bgGrad.addColorStop(0.7, '#07090e');
+    bgGrad.addColorStop(1, '#030408');
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(0, 0, 1920, 1080);
+
+    // Glowing cyan ambient orb top-left
+    const orb1 = ctx.createRadialGradient(300 + Math.sin(f * 0.03) * 60, 200, 10, 300, 200, 500);
+    orb1.addColorStop(0, 'rgba(0, 240, 255, 0.07)');
+    orb1.addColorStop(1, 'transparent');
+    ctx.fillStyle = orb1;
+    ctx.fillRect(0, 0, 1920, 1080);
+
+    // Glowing emerald ambient orb bottom-right
+    const orb2 = ctx.createRadialGradient(1600, 850 + Math.cos(f * 0.02) * 50, 10, 1600, 850, 600);
+    orb2.addColorStop(0, 'rgba(16, 185, 129, 0.06)');
+    orb2.addColorStop(1, 'transparent');
+    ctx.fillStyle = orb2;
+    ctx.fillRect(0, 0, 1920, 1080);
+
+    // Perspective floor grid
+    ctx.save();
+    ctx.strokeStyle = 'rgba(0, 240, 255, 0.04)';
+    ctx.lineWidth = 1;
+    const gridOffsetY = (f * 1.5) % 40;
+    for (let y = 600; y < 1080; y += 40) {
+      const actualY = y + gridOffsetY;
+      if (actualY <= 1080) {
+        ctx.beginPath();
+        ctx.moveTo(0, actualY);
+        ctx.lineTo(1920, actualY);
+        ctx.stroke();
+      }
+    }
+    for (let x = 0; x <= 1920; x += 80) {
+      ctx.beginPath();
+      ctx.moveTo(960 + (x - 960) * 0.3, 540);
+      ctx.lineTo(x, 1080);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // Floating particle network
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      const px = (p.x + p.vx * f + 1920) % 1920;
+      const py = (p.y + p.vy * f + 1080) % 1080;
+
+      ctx.beginPath();
+      ctx.arc(px, py, p.r, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(0, 240, 255, ${p.alpha * 0.6})`;
+      ctx.fill();
+
+      // Proximity lines
+      for (let j = i + 1; j < particles.length; j++) {
+        const p2 = particles[j];
+        const p2x = (p2.x + p2.vx * f + 1920) % 1920;
+        const p2y = (p2.y + p2.vy * f + 1080) % 1080;
+        const dist = Math.hypot(px - p2x, py - p2y);
+        if (dist < 130) {
+          ctx.beginPath();
+          ctx.moveTo(px, py);
+          ctx.lineTo(p2x, p2y);
+          ctx.strokeStyle = `rgba(0, 240, 255, ${(1 - dist / 130) * 0.12})`;
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
+      }
+    }
+  }
+
+  // Draw scene transition wipes / lens flares
+  function drawTransition(progress) {
+    if (progress > 0.85) {
+      const t = (progress - 0.85) / 0.15; // 0 to 1
+      const alpha = Math.sin(t * Math.PI);
+
+      // Horizontal optical beam flare
+      const flare = ctx.createLinearGradient(0, 540, 1920, 540);
+      flare.addColorStop(0, 'transparent');
+      flare.addColorStop(0.3, `rgba(0, 240, 255, ${alpha * 0.3})`);
+      flare.addColorStop(0.5, `rgba(255, 255, 255, ${alpha * 0.8})`);
+      flare.addColorStop(0.7, `rgba(16, 185, 129, ${alpha * 0.3})`);
+      flare.addColorStop(1, 'transparent');
+
+      ctx.fillStyle = flare;
+      ctx.fillRect(0, 532, 1920, 16);
+
+      // Radial flash
+      const radFlash = ctx.createRadialGradient(960, 540, 0, 960, 540, 700);
+      radFlash.addColorStop(0, `rgba(0, 240, 255, ${alpha * 0.25})`);
+      radFlash.addColorStop(1, 'transparent');
+      ctx.fillStyle = radFlash;
+      ctx.fillRect(0, 0, 1920, 1080);
+    }
+  }
+
+  // ==========================================
+  // SCENE 1: THE HARDWARE HOOK (Frames 0 - 119)
+  // ==========================================
+  function drawScene1(f) {
+    const t = f / 120; // 0 to 1
+    const enter = clamp(t / 0.25, 0, 1);
+    const easeEnter = easeOutCubic(enter);
+
+    // Zoom/drift camera
+    ctx.save();
+    const scale = lerp(0.96, 1.04, t);
+    ctx.translate(960, 540);
+    ctx.scale(scale, scale);
+    ctx.translate(-960, -540);
+
+    // --- Render Microcontroller IC Chip ---
+    const chipX = 960;
+    const chipY = 320;
+    const chipW = 280;
+    const chipH = 220;
+
+    // Outer circuit traces radiating
+    ctx.save();
+    ctx.strokeStyle = 'rgba(0, 240, 255, 0.25)';
+    ctx.lineWidth = 2;
+    const numTraces = 12;
+    for (let i = 0; i < numTraces; i++) {
+      const angle = (i / numTraces) * Math.PI * 2 + f * 0.005;
+      const x1 = chipX + Math.cos(angle) * (chipW * 0.6);
+      const y1 = chipY + Math.sin(angle) * (chipH * 0.6);
+      const x2 = chipX + Math.cos(angle) * (chipW * 1.3);
+      const y2 = chipY + Math.sin(angle) * (chipH * 1.3);
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+
+      // Traveling photon pulse along trace
+      const pulseT = ((f * 0.05 + i * 0.3) % 1);
+      const px = lerp(x1, x2, pulseT);
+      const py = lerp(y1, y2, pulseT);
+      ctx.beginPath();
+      ctx.arc(px, py, 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = '#00f0ff';
+      ctx.shadowColor = '#00f0ff';
+      ctx.shadowBlur = 12;
+      ctx.fill();
+    }
+    ctx.restore();
+
+    // Chip Pins (Gold metallic dual-row)
+    const pinCount = 10;
+    for (let i = 0; i < pinCount; i++) {
+      const py = chipY - chipH / 2 + 25 + (i * (chipH - 50)) / (pinCount - 1);
+      // Left pin
+      drawRoundedRect(chipX - chipW / 2 - 24, py - 4, 26, 8, 2, '#d4af37', 'rgba(255,255,255,0.4)', 1);
+      // Right pin
+      drawRoundedRect(chipX + chipW / 2 - 2, py - 4, 26, 8, 2, '#d4af37', 'rgba(255,255,255,0.4)', 1);
+    }
+
+    // Chip Body (Matte black with bevel)
+    ctx.save();
+    ctx.shadowColor = 'rgba(0, 240, 255, 0.4)';
+    ctx.shadowBlur = 30;
+    drawRoundedRect(chipX - chipW / 2, chipY - chipH / 2, chipW, chipH, 16, '#0f1422', 'rgba(0, 240, 255, 0.5)', 2);
+    ctx.restore();
+
+    // Chip Pin-1 Notch & Internal heat-spreader
+    drawRoundedRect(chipX - chipW / 2 + 18, chipY - chipH / 2 + 18, 14, 14, 7, '#07090e');
+    drawRoundedRect(chipX - chipW / 2 + 30, chipY - chipH / 2 + 30, chipW - 60, chipH - 60, 8, '#141c2e', 'rgba(255,255,255,0.06)', 1);
+
+    // Laser-etched metallic typography on chip
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+    ctx.font = 'bold 18px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('ESPRESSIF', chipX, chipY - 24);
+    ctx.font = 'bold 22px ui-monospace, monospace';
+    ctx.fillStyle = '#00f0ff';
+    ctx.fillText('ESP32-D0WD-V3', chipX, chipY + 4);
+    ctx.font = '14px ui-monospace, monospace';
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+    ctx.fillText('240MHz DUAL-CORE XTENSA', chipX, chipY + 28);
+    ctx.fillText('AMP ARCHITECTURE', chipX, chipY + 48);
+
+    // --- Kinetic Typography (Hero Section) ---
+    const textY = 600;
+
+    // Eyebrow Pill Badge
+    const badgeW = 340;
+    const badgeH = 42;
+    drawRoundedRect(960 - badgeW / 2, textY - 60, badgeW, badgeH, 21, 'rgba(0, 240, 255, 0.1)', 'rgba(0, 240, 255, 0.4)', 1.5);
+    ctx.font = 'bold 15px -apple-system, sans-serif';
+    ctx.fillStyle = '#00f0ff';
+    ctx.textAlign = 'center';
+    ctx.fillText('⚡ HARDWARE NETWORK SINKHOLE', 960, textY - 34);
+
+    // Giant Headline
+    ctx.save();
+    ctx.shadowColor = 'rgba(0, 240, 255, 0.6)';
+    ctx.shadowBlur = 40;
+    const headGrad = ctx.createLinearGradient(600, textY, 1320, textY);
+    headGrad.addColorStop(0, '#ffffff');
+    headGrad.addColorStop(0.4, '#00f0ff');
+    headGrad.addColorStop(1, '#10b981');
+    ctx.fillStyle = headGrad;
+    ctx.font = '900 84px -apple-system, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('ESP32 AdBlock', 960, textY + 45);
+    ctx.restore();
+
+    // Subtitle
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '500 28px -apple-system, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('Whole-Home Ad & Tracker Defense on a $4 Microchip', 960, textY + 95);
+
+    // 3 Feature Badges below
+    const badgeData = [
+      { text: '⚡ 0.5W Continuous Power', sub: 'Replaces 15W Mini-PCs' },
+      { text: '💵 $4 Microcontroller', sub: 'Zero Subscriptions / Free' },
+      { text: '🛡️ 100% Hardware Privacy', sub: 'Protects Every IoT & Mobile' }
+    ];
+
+    const cardW = 340;
+    const cardH = 80;
+    const spacing = 40;
+    const startX = 960 - (cardW * 3 + spacing * 2) / 2;
+
+    for (let i = 0; i < 3; i++) {
+      const cx = startX + i * (cardW + spacing);
+      const cy = textY + 140;
+
+      ctx.save();
+      ctx.shadowColor = 'rgba(0,0,0,0.5)';
+      ctx.shadowBlur = 15;
+      drawRoundedRect(cx, cy, cardW, cardH, 14, 'rgba(14, 20, 36, 0.85)', 'rgba(0, 240, 255, 0.25)', 1);
+      ctx.restore();
+
+      ctx.font = 'bold 18px -apple-system, sans-serif';
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'left';
+      ctx.fillText(badgeData[i].text, cx + 22, cy + 34);
+
+      ctx.font = '14px -apple-system, sans-serif';
+      ctx.fillStyle = '#00f0ff';
+      ctx.fillText(badgeData[i].sub, cx + 22, cy + 58);
+    }
+
+    ctx.restore();
+    drawTransition(t);
+  }
+
+  // ==========================================
+  // SCENE 2: DUAL-CORE AMP ARCHITECTURE (Frames 120 - 239)
+  // ==========================================
+  function drawScene2(f) {
+    const t = (f - 120) / 120; // 0 to 1
+    const enter = clamp(t / 0.2, 0, 1);
+    const ease = easeOutCubic(enter);
+
+    // Title & Eyebrow
+    const titleY = 130;
+    drawRoundedRect(960 - 210, titleY - 50, 420, 36, 18, 'rgba(139, 92, 246, 0.15)', 'rgba(139, 92, 246, 0.5)', 1.5);
+    ctx.font = 'bold 14px -apple-system, sans-serif';
+    ctx.fillStyle = '#a78bfa';
+    ctx.textAlign = 'center';
+    ctx.fillText('ASYMMETRIC MULTIPROCESSING (AMP)', 960, titleY - 27);
+
+    ctx.font = '900 56px -apple-system, sans-serif';
+    const tg = ctx.createLinearGradient(700, titleY, 1220, titleY);
+    tg.addColorStop(0, '#ffffff');
+    tg.addColorStop(0.5, '#00f0ff');
+    tg.addColorStop(1, '#a78bfa');
+    ctx.fillStyle = tg;
+    ctx.fillText('True Dual-Core Architecture', 960, titleY + 30);
+
+    ctx.font = '500 22px -apple-system, sans-serif';
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillText('Hardware-Level Core Isolation • Zero Mutex Contention under Heavy Traffic', 960, titleY + 68);
+
+    // 2 Large Split Core Cards
+    const cardW = 600;
+    const cardH = 480;
+    const cardY = 270;
+    const offset = (1 - ease) * 120;
+
+    // --- LEFT CARD: CORE 0 ---
+    const c0X = 960 - cardW - 30 - offset;
+    ctx.save();
+    ctx.shadowColor = 'rgba(0, 240, 255, 0.3)';
+    ctx.shadowBlur = 25;
+    drawRoundedRect(c0X, cardY, cardW, cardH, 20, 'rgba(14, 20, 36, 0.92)', 'rgba(0, 240, 255, 0.4)', 2);
+    ctx.restore();
+
+    // Core 0 Header Badge
+    drawRoundedRect(c0X + 32, cardY + 32, 170, 32, 16, 'rgba(0, 240, 255, 0.15)', '#00f0ff', 1);
+    ctx.font = 'bold 13px ui-monospace, monospace';
+    ctx.fillStyle = '#00f0ff';
+    ctx.textAlign = 'center';
+    ctx.fillText('TASK PRIORITY 10', c0X + 32 + 85, cardY + 53);
+
+    ctx.font = '900 32px -apple-system, sans-serif';
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'left';
+    ctx.fillText('CORE 0: DNS ENGINE', c0X + 32, cardY + 104);
+
+    ctx.font = '600 16px ui-monospace, monospace';
+    ctx.fillStyle = '#38bdf8';
+    ctx.fillText('240 MHz • 600 DMIPS DEDICATED', c0X + 32, cardY + 132);
+
+    // Core 0 Feature list
+    const c0Features = [
+      '⚡ Non-blocking UDP :53 Engine (select() event loop)',
+      '⚡ Sub-0.5ms Local Sinkhole Resolution',
+      '⚡ 32-Slot Asynchronous DNS Transaction Table',
+      '⚡ Per-Client Anti-Flood Rate Limiting (50 QPS)',
+      '⚡ Zero Mutex Contention with Web Server'
+    ];
+    for (let i = 0; i < c0Features.length; i++) {
+      const fy = cardY + 180 + i * 46;
+      drawRoundedRect(c0X + 32, fy, cardW - 64, 38, 8, 'rgba(0, 240, 255, 0.05)');
+      ctx.font = '500 16px -apple-system, sans-serif';
+      ctx.fillStyle = '#e2e8f0';
+      ctx.fillText(c0Features[i], c0X + 48, fy + 24);
+    }
+
+    // --- RIGHT CARD: CORE 1 ---
+    const c1X = 960 + 30 + offset;
+    ctx.save();
+    ctx.shadowColor = 'rgba(16, 185, 129, 0.3)';
+    ctx.shadowBlur = 25;
+    drawRoundedRect(c1X, cardY, cardW, cardH, 20, 'rgba(14, 20, 36, 0.92)', 'rgba(16, 185, 129, 0.4)', 2);
+    ctx.restore();
+
+    // Core 1 Header Badge
+    drawRoundedRect(c1X + 32, cardY + 32, 190, 32, 16, 'rgba(16, 185, 129, 0.15)', '#10b981', 1);
+    ctx.font = 'bold 13px ui-monospace, monospace';
+    ctx.fillStyle = '#10b981';
+    ctx.textAlign = 'center';
+    ctx.fillText('TASK PRIORITY 5 & 1', c1X + 32 + 95, cardY + 53);
+
+    ctx.font = '900 32px -apple-system, sans-serif';
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'left';
+    ctx.fillText('CORE 1: WEB & MANAGEMENT', c1X + 32, cardY + 104);
+
+    ctx.font = '600 16px ui-monospace, monospace';
+    ctx.fillStyle = '#34d399';
+    ctx.fillText('240 MHz • 600 DMIPS DEDICATED', c1X + 32, cardY + 132);
+
+    // Core 1 Feature list
+    const c1Features = [
+      '🌐 Zero-Heap JsonChunker HTTP REST Streaming',
+      '🌐 LittleFS Crash-Safe A/B Flash Updates',
+      '🌐 60fps HTML5 Canvas Throughput Telemetry',
+      '🌐 7-Tier Security Shield & Constant-Time Auth',
+      '🌐 Autonomous SNTP Sync & 20s Hardware WDT'
+    ];
+    for (let i = 0; i < c1Features.length; i++) {
+      const fy = cardY + 180 + i * 46;
+      drawRoundedRect(c1X + 32, fy, cardW - 64, 38, 8, 'rgba(16, 185, 129, 0.05)');
+      ctx.font = '500 16px -apple-system, sans-serif';
+      ctx.fillStyle = '#e2e8f0';
+      ctx.fillText(c1Features[i], c1X + 48, fy + 24);
+    }
+
+    // Interconnect Neon Bridge (Between Core 0 and Core 1)
+    const bridgeY = cardY + cardH / 2;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(139, 92, 246, 0.6)';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(c0X + cardW, bridgeY);
+    ctx.lineTo(c1X, bridgeY);
+    ctx.stroke();
+
+    // Pulse flowing across bridge
+    const bPulse = ((f * 0.08) % 1);
+    const bpx = lerp(c0X + cardW, c1X, bPulse);
+    ctx.beginPath();
+    ctx.arc(bpx, bridgeY, 6, 0, Math.PI * 2);
+    ctx.fillStyle = '#a78bfa';
+    ctx.shadowColor = '#a78bfa';
+    ctx.shadowBlur = 15;
+    ctx.fill();
+    ctx.restore();
+
+    // Bottom Central Badge
+    const bottomW = 860;
+    const bottomH = 75;
+    const bottomY = 800;
+    drawRoundedRect(960 - bottomW / 2, bottomY, bottomW, bottomH, 18, 'rgba(14, 20, 36, 0.95)', 'rgba(0, 240, 255, 0.3)', 1.5);
+    ctx.font = 'bold 22px -apple-system, sans-serif';
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'center';
+    ctx.fillText('240,000+ DOMAIN RULES IN SPI FLASH', 960, bottomY + 34);
+
+    ctx.font = '15px ui-monospace, monospace';
+    ctx.fillStyle = '#00f0ff';
+    ctx.fillText('40-Bit FNV-1a Hash Table • 1KB Prefix Table in RAM • Zero Runtime Allocation', 960, bottomY + 58);
+
+    drawTransition(t);
+  }
+
+  // ==========================================
+  // SCENE 3: EMPIRICAL STRESS TEST (Frames 240 - 359)
+  // ==========================================
+  function drawScene3(f) {
+    const t = (f - 240) / 120; // 0 to 1
+    const enter = clamp(t / 0.2, 0, 1);
+    const ease = easeOutCubic(enter);
+
+    // Alert Header
+    const titleY = 120;
+    drawRoundedRect(960 - 240, titleY - 45, 480, 36, 18, 'rgba(244, 63, 94, 0.15)', 'rgba(244, 63, 94, 0.5)', 1.5);
+    ctx.font = 'bold 14px -apple-system, sans-serif';
+    ctx.fillStyle = '#f43f5e';
+    ctx.textAlign = 'center';
+    ctx.fillText('BURST TEST SATURATION: 23,034 QUERIES', 960, titleY - 22);
+
+    ctx.font = '900 56px -apple-system, sans-serif';
+    const tg = ctx.createLinearGradient(700, titleY, 1220, titleY);
+    tg.addColorStop(0, '#ffffff');
+    tg.addColorStop(0.5, '#f43f5e');
+    tg.addColorStop(1, '#00f0ff');
+    ctx.fillStyle = tg;
+    ctx.fillText('Wire-Speed Stress Verification', 960, titleY + 32);
+
+    ctx.font = '500 22px -apple-system, sans-serif';
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillText('Empirically Pushed to Physical Hardware Saturation Limits', 960, titleY + 68);
+
+    // Big Giant Center Stat: 765.1 QPS
+    const statY = 380;
+    const tickerVal = (ease * 765.1).toFixed(1);
+
+    ctx.save();
+    ctx.shadowColor = 'rgba(0, 240, 255, 0.6)';
+    ctx.shadowBlur = 50;
+    const qpsGrad = ctx.createLinearGradient(700, statY, 1220, statY);
+    qpsGrad.addColorStop(0, '#00f0ff');
+    qpsGrad.addColorStop(0.5, '#ffffff');
+    qpsGrad.addColorStop(1, '#10b981');
+    ctx.fillStyle = qpsGrad;
+    ctx.font = '900 130px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(tickerVal, 960, statY);
+    ctx.restore();
+
+    ctx.font = 'bold 24px -apple-system, sans-serif';
+    ctx.fillStyle = '#00f0ff';
+    ctx.textAlign = 'center';
+    ctx.fillText('QUERIES PER SECOND (QPS)', 960, statY + 45);
+
+    ctx.font = '500 18px -apple-system, sans-serif';
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillText('802.11 b/g/n Wi-Fi Half-Duplex Physical Airtime Limit', 960, statY + 75);
+
+    // 3 High-Impact Bento Cards below
+    const bentoData = [
+      {
+        value: '0.00%',
+        label: 'PACKET LOSS',
+        sub: '0 Drops over 23,034 Test Queries',
+        color: '#10b981'
+      },
+      {
+        value: '0.40 ms',
+        label: 'SINKHOLE LATENCY',
+        sub: 'Sub-Millisecond Instant Drop',
+        color: '#00f0ff'
+      },
+      {
+        value: 'Δ = -4 B',
+        label: 'ZERO HEAP DRIFT',
+        sub: 'Zero Fragmentation over 24h Soak',
+        color: '#a78bfa'
+      }
+    ];
+
+    const cardW = 380;
+    const cardH = 180;
+    const spacing = 40;
+    const startX = 960 - (cardW * 3 + spacing * 2) / 2;
+    const cardY = 580;
+
+    for (let i = 0; i < 3; i++) {
+      const cx = startX + i * (cardW + spacing);
+
+      ctx.save();
+      ctx.shadowColor = bentoData[i].color + '44';
+      ctx.shadowBlur = 20;
+      drawRoundedRect(cx, cardY, cardW, cardH, 20, 'rgba(14, 20, 36, 0.95)', bentoData[i].color + '66', 1.5);
+      ctx.restore();
+
+      ctx.font = '900 48px ui-monospace, monospace';
+      ctx.fillStyle = bentoData[i].color;
+      ctx.textAlign = 'center';
+      ctx.fillText(bentoData[i].value, cx + cardW / 2, cardY + 68);
+
+      ctx.font = 'bold 18px -apple-system, sans-serif';
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(bentoData[i].label, cx + cardW / 2, cardY + 110);
+
+      ctx.font = '14px -apple-system, sans-serif';
+      ctx.fillStyle = '#94a3b8';
+      ctx.fillText(bentoData[i].sub, cx + cardW / 2, cardY + 140);
+    }
+
+    // Formula Banner
+    const formW = 900;
+    const formH = 50;
+    const formY = 820;
+    drawRoundedRect(960 - formW / 2, formY, formW, formH, 12, 'rgba(244, 63, 94, 0.08)', 'rgba(244, 63, 94, 0.3)', 1);
+    ctx.font = '600 15px ui-monospace, monospace';
+    ctx.fillStyle = '#f43f5e';
+    ctx.textAlign = 'center';
+    ctx.fillText('THEORETICAL WI-FI LIMIT: ~833 QPS • EMPIRICAL PEAK: 765.1 QPS (91.8% CHANNEL SATURATION)', 960, formY + 31);
+
+    drawTransition(t);
+  }
+
+  // ==========================================
+  // SCENE 4: CYBER-LUMINOUS DASHBOARD (Frames 360 - 479)
+  // ==========================================
+  function drawScene4(f) {
+    const t = (f - 360) / 120; // 0 to 1
+    const enter = clamp(t / 0.2, 0, 1);
+    const ease = easeOutCubic(enter);
+
+    // Title
+    const titleY = 110;
+    drawRoundedRect(960 - 240, titleY - 45, 480, 36, 18, 'rgba(0, 240, 255, 0.15)', 'rgba(0, 240, 255, 0.5)', 1.5);
+    ctx.font = 'bold 14px -apple-system, sans-serif';
+    ctx.fillStyle = '#00f0ff';
+    ctx.textAlign = 'center';
+    ctx.fillText('REACTIVE CYBER-LUMINOUS TELEMETRY', 960, titleY - 22);
+
+    ctx.font = '900 52px -apple-system, sans-serif';
+    const tg = ctx.createLinearGradient(700, titleY, 1220, titleY);
+    tg.addColorStop(0, '#ffffff');
+    tg.addColorStop(0.5, '#00f0ff');
+    tg.addColorStop(1, '#10b981');
+    ctx.fillStyle = tg;
+    ctx.fillText('Real-Time Web Dashboard', 960, titleY + 30);
+
+    ctx.font = '500 20px -apple-system, sans-serif';
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillText('Single-Page Application Served Directly from SPI Flash • Zero External CDNs', 960, titleY + 64);
+
+    // Simulated Dashboard Window Box
+    const winW = 1240;
+    const winH = 650;
+    const winX = 960 - winW / 2;
+    const winY = 220;
+
+    ctx.save();
+    ctx.shadowColor = 'rgba(0, 240, 255, 0.25)';
+    ctx.shadowBlur = 30;
+    drawRoundedRect(winX, winY, winW, winH, 20, 'rgba(10, 15, 28, 0.95)', 'rgba(0, 240, 255, 0.35)', 1.5);
+    ctx.restore();
+
+    // Dashboard Sticky Header Bar
+    drawRoundedRect(winX, winY, winW, 64, 20, 'rgba(14, 20, 38, 0.98)', 'rgba(0, 240, 255, 0.2)', 1);
+    ctx.font = 'bold 20px -apple-system, sans-serif';
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'left';
+    ctx.fillText('🛡️ ESP32 AdBlock', winX + 28, winY + 40);
+
+    // Header Telemetry Badges
+    const headBadges = [
+      { label: 'DEVICE', val: '192.168.1.1' },
+      { label: 'UPTIME', val: '24h 12m' },
+      { label: 'SIGNAL', val: '-48 dBm' },
+      { label: 'FREE DRAM', val: '105.7 KB' }
+    ];
+    for (let i = 0; i < headBadges.length; i++) {
+      const bx = winX + winW - 540 + i * 130;
+      drawRoundedRect(bx, winY + 16, 120, 32, 8, 'rgba(0, 240, 255, 0.08)', 'rgba(0, 240, 255, 0.2)', 1);
+      ctx.font = '10px ui-monospace, monospace';
+      ctx.fillStyle = '#94a3b8';
+      ctx.fillText(headBadges[i].label, bx + 10, winY + 29);
+      ctx.font = 'bold 12px ui-monospace, monospace';
+      ctx.fillStyle = '#00f0ff';
+      ctx.fillText(headBadges[i].val, bx + 10, winY + 43);
+    }
+
+    // 4 Bento Metric Cards inside Dashboard
+    const dbCards = [
+      { label: 'Ads Sinkholed', val: '14,892', sub: '28.4% blocked', color: '#f43f5e' },
+      { label: 'Clean Traffic Passed', val: '37,510', sub: '71.6% resolved', color: '#10b981' },
+      { label: 'Rules in Flash', val: '240,000', sub: '1.20MB binary index', color: '#00f0ff' },
+      { label: 'Connected Devices', val: '8 Active', sub: 'Wired & Wireless', color: '#a78bfa' }
+    ];
+    const bW = (winW - 56 - 36) / 4;
+    const bH = 105;
+    const bY = winY + 84;
+    for (let i = 0; i < 4; i++) {
+      const bx = winX + 28 + i * (bW + 12);
+      drawRoundedRect(bx, bY, bW, bH, 12, 'rgba(16, 24, 46, 0.8)', dbCards[i].color + '44', 1);
+
+      ctx.font = '500 13px -apple-system, sans-serif';
+      ctx.fillStyle = '#94a3b8';
+      ctx.fillText(dbCards[i].label, bx + 16, bY + 28);
+
+      ctx.font = 'bold 26px ui-monospace, monospace';
+      ctx.fillStyle = dbCards[i].color;
+      ctx.fillText(dbCards[i].val, bx + 16, bY + 64);
+
+      ctx.font = '12px -apple-system, sans-serif';
+      ctx.fillStyle = '#cbd5e1';
+      ctx.fillText(dbCards[i].sub, bx + 16, bY + 88);
+    }
+
+    // Live DNS Resolution Throughput Wave Card (Canvas Simulator)
+    const waveW = winW - 56;
+    const waveH = 260;
+    const waveX = winX + 28;
+    const waveY = bY + bH + 20;
+
+    drawRoundedRect(waveX, waveY, waveW, waveH, 14, 'rgba(12, 18, 34, 0.95)', 'rgba(0, 240, 255, 0.25)', 1);
+
+    ctx.font = 'bold 15px -apple-system, sans-serif';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText('LIVE DNS RESOLUTION THROUGHPUT', waveX + 20, waveY + 30);
+    ctx.font = '13px ui-monospace, monospace';
+    ctx.fillStyle = '#00f0ff';
+    ctx.fillText('PEAK: 765 QPS • REACTION: 0.4ms', waveX + waveW - 270, waveY + 30);
+
+    // Draw the animated sine-wave pulse graph
+    ctx.save();
+    ctx.beginPath();
+    const graphBaseY = waveY + waveH - 30;
+    const graphTopY = waveY + 60;
+    const graphH = graphBaseY - graphTopY;
+
+    // Background horizontal grid lines
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+    ctx.lineWidth = 1;
+    for (let gl = 0; gl <= 3; gl++) {
+      const gy = graphTopY + gl * (graphH / 3);
+      ctx.moveTo(waveX + 20, gy);
+      ctx.lineTo(waveX + waveW - 20, gy);
+    }
+    ctx.stroke();
+
+    // The glowing wave line
+    ctx.beginPath();
+    ctx.moveTo(waveX + 20, graphBaseY);
+    for (let gx = 0; gx <= waveW - 40; gx += 8) {
+      const normX = gx / (waveW - 40);
+      const waveVal = Math.sin(normX * 8 - f * 0.15) * 0.4 +
+                      Math.sin(normX * 18 + f * 0.1) * 0.2 +
+                      Math.cos(normX * 4 - f * 0.05) * 0.25;
+      const py = graphBaseY - (0.45 + waveVal * 0.4) * graphH;
+      ctx.lineTo(waveX + 20 + gx, py);
+    }
+
+    // Gradient fill under wave
+    const waveGrad = ctx.createLinearGradient(waveX, graphTopY, waveX, graphBaseY);
+    waveGrad.addColorStop(0, 'rgba(0, 240, 255, 0.35)');
+    waveGrad.addColorStop(1, 'rgba(0, 240, 255, 0.0)');
+    ctx.lineTo(waveX + waveW - 20, graphBaseY);
+    ctx.closePath();
+    ctx.fillStyle = waveGrad;
+    ctx.fill();
+
+    // Wave stroke
+    ctx.beginPath();
+    for (let gx = 0; gx <= waveW - 40; gx += 8) {
+      const normX = gx / (waveW - 40);
+      const waveVal = Math.sin(normX * 8 - f * 0.15) * 0.4 +
+                      Math.sin(normX * 18 + f * 0.1) * 0.2 +
+                      Math.cos(normX * 4 - f * 0.05) * 0.25;
+      const py = graphBaseY - (0.45 + waveVal * 0.4) * graphH;
+      if (gx === 0) ctx.moveTo(waveX + 20 + gx, py);
+      else ctx.lineTo(waveX + 20 + gx, py);
+    }
+    ctx.strokeStyle = '#00f0ff';
+    ctx.lineWidth = 3;
+    ctx.shadowColor = '#00f0ff';
+    ctx.shadowBlur = 12;
+    ctx.stroke();
+    ctx.restore();
+
+    // 7-Tier Security Shield Badges below wave
+    const shieldBadges = [
+      '✓ DNS Rebinding Shield',
+      '✓ Anti-Flood Rate Limiter',
+      '✓ Constant-Time Auth',
+      '✓ Zero-Heap Chunker'
+    ];
+    const sW = (winW - 56 - 36) / 4;
+    const sH = 40;
+    const sY = waveY + waveH + 18;
+    for (let i = 0; i < 4; i++) {
+      const sx = winX + 28 + i * (sW + 12);
+      drawRoundedRect(sx, sY, sW, sH, 8, 'rgba(16, 185, 129, 0.12)', 'rgba(16, 185, 129, 0.4)', 1);
+      ctx.font = 'bold 13px -apple-system, sans-serif';
+      ctx.fillStyle = '#10b981';
+      ctx.textAlign = 'center';
+      ctx.fillText(shieldBadges[i], sx + sW / 2, sY + 25);
+    }
+
+    drawTransition(t);
+  }
+
+  // ==========================================
+  // SCENE 5: FINALE & CALL TO ACTION (Frames 480 - 599)
+  // ==========================================
+  function drawScene5(f) {
+    const t = (f - 480) / 120; // 0 to 1
+    const enter = clamp(t / 0.2, 0, 1);
+    const ease = easeOutCubic(enter);
+
+    // Fade out to black at the very end (last 15 frames)
+    const fadeOut = t > 0.88 ? (t - 0.88) / 0.12 : 0;
+
+    // Top Comparison Matrix Card
+    const compW = 1100;
+    const compH = 140;
+    const compX = 960 - compW / 2;
+    const compY = 140;
+
+    ctx.save();
+    ctx.shadowColor = 'rgba(0, 240, 255, 0.25)';
+    ctx.shadowBlur = 25;
+    drawRoundedRect(compX, compY, compW, compH, 20, 'rgba(14, 20, 36, 0.95)', 'rgba(0, 240, 255, 0.35)', 1.5);
+    ctx.restore();
+
+    // Winner Pill: ESP32 AdBlock
+    drawRoundedRect(compX + 24, compY + 22, compW - 48, 44, 10, 'rgba(16, 185, 129, 0.15)', '#10b981', 1.5);
+    ctx.font = 'bold 16px ui-monospace, monospace';
+    ctx.fillStyle = '#10b981';
+    ctx.textAlign = 'left';
+    ctx.fillText('🏆 ESP32 AdBlock:', compX + 44, compY + 50);
+    ctx.font = '500 16px -apple-system, sans-serif';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText('0.5W Power • $4 Hardware • Zero SD-Card Wear • 765 QPS Wire Speed', compX + 230, compY + 50);
+
+    // Loser Pill: Raspberry Pi
+    drawRoundedRect(compX + 24, compY + 74, compW - 48, 44, 10, 'rgba(255, 255, 255, 0.04)', 'rgba(255, 255, 255, 0.1)', 1);
+    ctx.font = 'bold 16px ui-monospace, monospace';
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillText('⚠️ Raspberry Pi:', compX + 44, compY + 102);
+    ctx.font = '500 16px -apple-system, sans-serif';
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillText('15W Power • $50–$100 Cost • Frequent SD Card Corruption • Heavy OS Overkill', compX + 230, compY + 102);
+
+    // Main Final Lockup
+    const headY = 430;
+    ctx.font = 'bold 18px -apple-system, sans-serif';
+    ctx.fillStyle = '#00f0ff';
+    ctx.textAlign = 'center';
+    ctx.fillText('RECLAIM YOUR NETWORK PRIVACY', 960, headY - 40);
+
+    ctx.save();
+    ctx.shadowColor = 'rgba(0, 240, 255, 0.7)';
+    ctx.shadowBlur = 50;
+    const finalGrad = ctx.createLinearGradient(500, headY, 1420, headY);
+    finalGrad.addColorStop(0, '#ffffff');
+    finalGrad.addColorStop(0.5, '#00f0ff');
+    finalGrad.addColorStop(1, '#10b981');
+    ctx.fillStyle = finalGrad;
+    ctx.font = '900 84px -apple-system, sans-serif';
+    ctx.fillText('FLASH. PLUG IN. PROTECT.', 960, headY + 40);
+    ctx.restore();
+
+    ctx.font = '500 28px -apple-system, sans-serif';
+    ctx.fillStyle = '#cbd5e1';
+    ctx.fillText('Whole-Home Ad & Tracker Blocking on Silent Silicon', 960, headY + 100);
+
+    // Call to Action Badges
+    const ctaBadges = [
+      '⭐ 100% Free & Open Source',
+      '🔒 AGPL-3.0 License',
+      '⚡ Native C++ / ESP-IDF'
+    ];
+    const cW = 280;
+    const cH = 54;
+    const startCX = 960 - (cW * 3 + 30 * 2) / 2;
+    const cY = headY + 150;
+    for (let i = 0; i < 3; i++) {
+      const cx = startCX + i * (cW + 30);
+      drawRoundedRect(cx, cY, cW, cH, 12, 'rgba(14, 20, 36, 0.95)', 'rgba(0, 240, 255, 0.35)', 1.5);
+      ctx.font = 'bold 16px -apple-system, sans-serif';
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'center';
+      ctx.fillText(ctaBadges[i], cx + cW / 2, cY + 33);
+    }
+
+    // GitHub Repo Banner
+    ctx.font = '500 18px ui-monospace, monospace';
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillText('github.com/SubhadraRoy/esp32-adblock', 960, cY + 115);
+
+    // Final Fade to Black
+    if (fadeOut > 0) {
+      ctx.fillStyle = `rgba(7, 9, 14, ${fadeOut})`;
+      ctx.fillRect(0, 0, 1920, 1080);
+    }
+  }
+
+  // Master frame rendering loop
+  async function renderAllFrames() {
+    for (let f = 0; f < TOTAL_FRAMES; f++) {
+      ctx.clearRect(0, 0, 1920, 1080);
+
+      // 1. Draw ambient starfield & cyber grid
+      drawBackground(f);
+
+      // 2. Route to active scene
+      if (f < 120) {
+        drawScene1(f);
+      } else if (f < 240) {
+        drawScene2(f);
+      } else if (f < 360) {
+        drawScene3(f);
+      } else if (f < 480) {
+        drawScene4(f);
+      } else {
+        drawScene5(f);
+      }
+
+      // Convert canvas to JPEG blob and upload to Node server
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.92));
+      await fetch('/frame?f=' + f, { method: 'POST', body: blob });
+    }
+
+    // Signal completion
+    await fetch('/done');
+  }
+
+  // Start render when DOM is ready
+  window.addEventListener('DOMContentLoaded', () => {
+    renderAllFrames();
+  });
+</script>
+</body>
+</html>
